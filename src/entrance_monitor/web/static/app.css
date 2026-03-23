@@ -1,0 +1,226 @@
+:root {
+  --bg: #08151f;
+  --panel: #122738;
+  --panel-2: #173248;
+  --accent: #e7b64b;
+  --text: #eff4f7;
+  --muted: #9eb6c6;
+  --danger: #f57474;
+  --ok: #77d69b;
+  --line: rgba(255, 255, 255, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", sans-serif;
+  background:
+    radial-gradient(circle at top right, rgba(231, 182, 75, 0.15), transparent 30%),
+    linear-gradient(180deg, #09141e 0%, #0f2130 100%);
+  color: var(--text);
+}
+
+.shell {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 32px 20px 48px;
+}
+
+.hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(2rem, 4vw, 3.5rem);
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+.pill {
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--accent);
+}
+
+.grid {
+  display: grid;
+  gap: 16px;
+}
+
+.metrics-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-bottom: 16px;
+}
+
+.info-grid {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  margin-bottom: 16px;
+}
+
+.debug-grid {
+  grid-template-columns: 2fr 1fr;
+}
+
+.card {
+  background: linear-gradient(180deg, rgba(23, 50, 72, 0.98), rgba(18, 39, 56, 0.98));
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 20px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.2);
+}
+
+.accent {
+  border-color: rgba(231, 182, 75, 0.35);
+}
+
+.metric {
+  font-size: clamp(2rem, 5vw, 3rem);
+  margin: 12px 0 0;
+  font-weight: 700;
+}
+
+.kv {
+  margin: 0;
+}
+
+.kv div {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.kv dt {
+  color: var(--muted);
+}
+
+.kv dd {
+  margin: 0;
+  text-align: right;
+}
+
+.events {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.events th,
+.events td {
+  text-align: left;
+  padding: 12px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.footer {
+  margin-top: 16px;
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.footer a {
+  color: var(--accent);
+}
+
+.debug-frame {
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+}
+
+.debug-json {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: Consolas, monospace;
+  color: var(--muted);
+}
+
+.settings-copy {
+  margin: 0;
+  color: var(--muted);
+}
+
+.settings-status {
+  margin-top: 12px;
+  color: var(--accent);
+}
+
+.settings-grid {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.settings-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.settings-fields input {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(8, 21, 31, 0.7);
+  color: var(--text);
+  padding: 12px 14px;
+  font: inherit;
+}
+
+.settings-actions {
+  align-self: start;
+}
+
+.settings-buttons {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.settings-buttons button {
+  border: 1px solid rgba(231, 182, 75, 0.35);
+  border-radius: 10px;
+  background: var(--accent);
+  color: #08151f;
+  padding: 12px 16px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.settings-buttons button.secondary {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--line);
+}
+
+@media (max-width: 900px) {
+  .debug-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-fields {
+    grid-template-columns: 1fr;
+  }
+}

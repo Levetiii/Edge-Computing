@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="/static/app.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Edge-First Entrance Monitor</p>
+          <h1>Entrance Flow and Busyness</h1>
+        </div>
+        <div class="pill" id="system-state">Loading</div>
+      </header>
+
+      <section class="grid metrics-grid">
+        <article class="card">
+          <h2>Entry Rate / min</h2>
+          <p class="metric" id="entry-rate">0</p>
+        </article>
+        <article class="card">
+          <h2>Exit Rate / min</h2>
+          <p class="metric" id="exit-rate">0</p>
+        </article>
+        <article class="card">
+          <h2>Net Flow / min</h2>
+          <p class="metric" id="net-flow">0</p>
+        </article>
+        <article class="card accent">
+          <h2>Busyness Level</h2>
+          <p class="metric" id="load-level">Low</p>
+        </article>
+      </section>
+
+      <section class="grid info-grid">
+        <article class="card">
+          <h2>Sensor Telemetry</h2>
+          <dl class="kv">
+            <div><dt>Camera</dt><dd id="camera-status">-</dd></div>
+            <div><dt>mmWave</dt><dd id="mmwave-status">-</dd></div>
+            <div><dt>Resolution</dt><dd id="frame-resolution">-</dd></div>
+            <div><dt>Presence</dt><dd id="presence-state">-</dd></div>
+            <div><dt>Freshness</dt><dd id="freshness-ms">-</dd></div>
+            <div><dt>Capture FPS</dt><dd id="delivered-fps">-</dd></div>
+            <div><dt>Detector FPS</dt><dd id="detector-fps">-</dd></div>
+            <div><dt>Gated</dt><dd id="gated-mode">-</dd></div>
+          </dl>
+        </article>
+        <article class="card">
+          <h2>System Telemetry</h2>
+          <dl class="kv">
+            <div><dt>CPU</dt><dd id="cpu-percent">-</dd></div>
+            <div><dt>RAM</dt><dd id="ram-mb">-</dd></div>
+            <div><dt>Temp</dt><dd id="temperature-c">-</dd></div>
+            <div><dt>Confidence</dt><dd id="count-confidence">-</dd></div>
+            <div><dt>Warnings</dt><dd id="warnings">-</dd></div>
+            <div><dt>Audio</dt><dd id="audio-disabled">true</dd></div>
+          </dl>
+        </article>
+      </section>
+
+      <section class="card">
+        <h2>Recent Crossing Events</h2>
+        <table class="events">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Direction</th>
+              <th>Track</th>
+            </tr>
+          </thead>
+          <tbody id="events-body">
+            <tr><td colspan="3">Waiting for events…</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <footer class="footer">
+        <a href="/debug">Open local debug view</a>
+        <a href="/settings">Open local settings</a>
+      </footer>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+  </html>

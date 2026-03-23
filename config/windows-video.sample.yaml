@@ -1,0 +1,78 @@
+app:
+  host: 127.0.0.1
+  port: 8000
+  schema_version: "1.0.0"
+  data_dir: data
+  local_debug_only: true
+
+camera:
+  source: "path/to/your/entrance-video.mp4"
+  backend: "any"
+  width: 1280
+  height: 720
+  fps: 30
+  warmup_seconds: 2.0
+  reconnect_seconds: 5.0
+  roi:
+    x1: 160
+    y1: 120
+    x2: 1120
+    y2: 680
+  line:
+    x1: 640
+    y1: 150
+    x2: 640
+    y2: 650
+  detector_fps_normal: 10.0
+  detector_fps_gated: 3.0
+  crossing_cooldown_seconds: 1.5
+  line_hysteresis_px: 24
+  active_track_promote_threshold: 3
+  active_track_promote_seconds: 5
+
+mmwave:
+  mode: "mock"
+  port: "COM3"
+  baudrate: 256000
+  mock_present_seconds: 8
+  mock_absent_seconds: 12
+
+detector:
+  backend: "ultralytics"
+  model_path: "yolo11n.pt"
+  confidence_threshold: 0.25
+  iou_threshold: 0.4
+  imgsz: 416
+
+storage:
+  sqlite_path: data/entrance_monitor.db
+  retention_days: 7
+  max_log_files: 5
+  max_log_file_mb: 10
+
+runtime:
+  warmup_seconds: 30
+  camera_ok_age_ms: 1000
+  camera_stale_age_ms: 2000
+  camera_disconnect_age_ms: 5000
+  mmwave_ok_age_ms: 1000
+  mmwave_stale_age_ms: 2000
+  mmwave_disconnect_age_ms: 5000
+  high_drop_ratio_threshold: 0.10
+  degraded_drop_ratio_threshold: 0.20
+  publish_backlog_ms: 2000
+  publish_recover_ms: 500
+  publish_recover_seconds: 10
+  freshness_high_ms: 1000
+  freshness_unknown_ms: 2000
+  low_activity_absent_seconds: 10
+  disagreement_present_seconds: 10
+  disagreement_absent_seconds: 5
+  window_seconds: 30
+  active_track_window_seconds: 5
+  snapshot_interval_seconds: 1
+  crossing_band_medium_threshold: 4
+  crossing_band_high_threshold: 8
+
+dashboard:
+  history_minutes_default: 15

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="/static/app.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Local Debug / Calibration</p>
+          <h1>Annotated Frame and Pipeline State</h1>
+        </div>
+        <div class="pill">Local only</div>
+      </header>
+      <section class="grid debug-grid">
+        <article class="card debug-frame-card">
+          <h2>Annotated Frame</h2>
+          <img id="debug-frame" class="debug-frame" src="/api/v1/debug/frame.jpg" alt="debug frame">
+        </article>
+        <article class="card">
+          <h2>Latest Snapshot</h2>
+          <pre id="debug-json" class="debug-json">Loading…</pre>
+        </article>
+      </section>
+      <footer class="footer">
+        <a href="/">Back to dashboard</a>
+        <a href="/settings">Open local settings</a>
+      </footer>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+  </html>
