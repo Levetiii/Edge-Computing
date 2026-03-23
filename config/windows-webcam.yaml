@@ -18,14 +18,19 @@ camera:
     x2: 1240
     y2: 700
   line:
-    x1: 1000
-    y1: 80
-    x2: 1000
-    y2: 700
+    x1: 850
+    y1: 700
+    x2: 850
+    y2: 80
   detector_fps_normal: 10.0
   detector_fps_gated: 3.0
   crossing_cooldown_seconds: 1.5
   line_hysteresis_px: 24
+  min_detection_width_px: 24
+  min_detection_height_px: 48
+  detection_edge_margin_px: 4
+  min_track_hits_for_crossing: 2
+  crossing_confirm_frames: 1
   active_track_promote_threshold: 3
   active_track_promote_seconds: 5
 mmwave:
@@ -41,7 +46,7 @@ detector:
   iou_threshold: 0.4
   imgsz: 416
 storage:
-  sqlite_path: data/entrance_monitor.db
+  sqlite_path: data\entrance_monitor.db
   retention_days: 7
   max_log_files: 5
   max_log_file_mb: 10

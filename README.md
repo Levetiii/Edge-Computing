@@ -16,6 +16,7 @@ Current development webcam: `Logi C270 HD` over USB/UVC.
 - FastAPI read-only REST API
 - SSE live stream
 - Operator dashboard and local-only debug/calibration view
+- Local-only settings page for live ROI/line/threshold edits
 - SQLite storage for metrics snapshots and events
 
 ## What this does not assume
@@ -23,6 +24,15 @@ Current development webcam: `Logi C270 HD` over USB/UVC.
 - It does not upload raw media.
 - It does not require cloud inference.
 - It does not require a specific mmWave module to start; mock mode is supported.
+
+## Current scope and limitations
+
+- Camera is the only source of truth for `entry`, `exit`, and `net flow`.
+- mmWave is currently advisory only and is still a placeholder integration until the real module protocol is implemented.
+- Windows development currently uses the Ultralytics Python runtime. The recommended Raspberry Pi delivery path is still `YOLO11n -> ONNX Runtime -> CPU benchmarking/quantization`.
+- Tracking is still a lightweight prototype tracker. It is good enough for calibration and basic demos, but not yet equivalent to a production-grade ByteTrack-style association flow.
+- The normal dashboard is metrics-first. `/debug` and `/settings` are local-only and are the only places where raw annotated frames or calibration controls should appear.
+- The current top KPI cards are proposal-facing rates. They are derived from the rolling 30-second counts, so `1 crossing in 30s` will display as `2 / min`.
 
 ## Quick start
 
@@ -51,6 +61,7 @@ entrance-monitor --config config/default.yaml
 - Operator dashboard: `http://127.0.0.1:8000/`
 - Local debug view: `http://127.0.0.1:8000/debug`
 - Local settings page: `http://127.0.0.1:8000/settings`
+- Local validation page: `http://127.0.0.1:8000/validation`
 
 ## Config files
 
@@ -94,6 +105,49 @@ The dashboard also shows derived proposal-facing KPIs:
 - `exit_rate_per_min = exit_count_30s * 2`
 - `net_flow_per_min = net_count_30s * 2`
 - `busyness_level = entrance_load_level`
+
+This is why the rate cards can look doubled during manual testing:
+
+- `1 entry in the last 30s -> 2 / min`
+- `3 entries in the last 30s -> 6 / min`
+
+When validating the system, compare against the raw `*_count_30s` fields first, then treat the `*_rate_per_min` cards as an estimated pace indicator.
+
+## Research-backed implementation priorities
+
+The most important next changes, based on current product and technique research, are:
+
+1. Add raw `30s` counts directly beside the KPI rate cards.
+2. Add trend/history charts from `/api/v1/metrics/history`.
+3. Add CSV export and richer result reporting to the validation workflow.
+4. Harden settings persistence with atomic save, rollback, and a settings audit trail.
+5. Move the Pi-target runtime to `ONNX Runtime` and benchmark `YOLO11n` there.
+6. Replace the lightweight centroid tracker with a stronger tracker.
+7. Keep mmWave advisory only until the real protocol and calibration flow are implemented.
+
+## Validation guidance
+
+Use a calibration-first workflow:
+
+1. Align ROI and line in `/settings` and `/debug`.
+2. Use `/validation` to start a session, record manual entries/exits, and compare against the live system counts.
+3. Run a pilot of `20-30` crossings per direction.
+4. For formal validation, record the raw `30s` counts, recent events, and manual ground truth.
+5. Do not report a single universal accuracy number; report by condition:
+   - normal walking
+   - back-and-forth
+   - loitering near the line
+   - grouped crossings
+   - low light / occlusion
+
+Commercial products such as Axis and VIVOTEK treat validation as a first-class workflow, not just a screenshot exercise.
+
+## Security and privacy posture
+
+- Keep the normal service bound to `127.0.0.1` unless you intentionally set up LAN access.
+- Do not expose `/debug` or `/settings` beyond the local machine.
+- No raw video or audio should be stored or published by the normal dashboard/API.
+- If you later expose the dashboard on a LAN, add authentication before doing so.
 
 ## Setup guides
 

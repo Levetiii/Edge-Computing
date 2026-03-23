@@ -7,81 +7,192 @@
     <link rel="stylesheet" href="/static/app.css">
   </head>
   <body>
-    <main class="shell">
-      <header class="hero">
-        <div>
-          <p class="eyebrow">Edge-First Entrance Monitor</p>
-          <h1>Entrance Flow and Busyness</h1>
-        </div>
-        <div class="pill" id="system-state">Loading</div>
+    <main class="shell dashboard-home">
+      <header class="dashboard-heading">
+        <p class="dashboard-tag">Live doorway dashboard</p>
+        <h1>Entrance Monitor</h1>
+        <p class="dashboard-copy">Use this page to quickly understand current flow. Counts show the last 30 seconds; rates are only estimates.</p>
       </header>
 
-      <section class="grid metrics-grid">
-        <article class="card">
-          <h2>Entry Rate / min</h2>
-          <p class="metric" id="entry-rate">0</p>
+      <section class="card dashboard-bar">
+        <div class="dashboard-strip">
+          <article class="bar-stat">
+            <span>System status</span>
+            <strong id="system-state">Loading</strong>
+          </article>
+          <article class="bar-stat">
+            <span>Updated</span>
+            <strong id="last-updated">-</strong>
+          </article>
+          <article class="bar-stat">
+            <span>Count confidence</span>
+            <strong id="operator-confidence">-</strong>
+          </article>
+          <article class="bar-stat">
+            <span>Warnings</span>
+            <strong id="warnings">None</strong>
+          </article>
+          <article class="bar-stat bar-stat-action">
+            <span>Live updates</span>
+            <div class="bar-action-row">
+              <strong id="live-mode-state">Live</strong>
+              <button type="button" class="chip-button secondary" id="toggle-live-updates">Freeze</button>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="grid home-top-grid">
+        <article class="card spotlight-card accent">
+          <div class="spotlight-head">
+            <div>
+              <p class="section-tag">Busyness now</p>
+              <h2>Current Busyness</h2>
+            </div>
+            <p class="spotlight-value" id="load-level">Low</p>
+          </div>
+
+          <p class="spotlight-copy">
+            Crossings in the last 30 seconds:
+            <strong id="crossing-count-30s">0</strong>
+          </p>
+
+          <div class="spotlight-meta">
+            <article class="spotlight-stat">
+              <span>Camera</span>
+              <strong id="camera-status">-</strong>
+            </article>
+            <article class="spotlight-stat">
+              <span>Peak crossings</span>
+              <strong id="peak-crossings">0</strong>
+              <small id="peak-crossings-context">Within selected range</small>
+            </article>
+            <article class="spotlight-stat">
+              <span>Last activity</span>
+              <strong id="last-activity">No recent events</strong>
+            </article>
+            <article class="spotlight-stat">
+              <span>Net count</span>
+              <strong id="net-count-30s">0</strong>
+              <small>Estimated <span id="net-flow">0</span> / min</small>
+            </article>
+          </div>
         </article>
-        <article class="card">
-          <h2>Exit Rate / min</h2>
-          <p class="metric" id="exit-rate">0</p>
+
+        <div class="grid kpi-stack">
+          <article class="card kpi-card">
+            <div class="kpi-head">
+              <h2>Entry Count</h2>
+              <span class="kpi-context">Last 30 seconds</span>
+            </div>
+            <p class="metric" id="entry-count-30s">0</p>
+            <p class="metric-subtext">Estimated rate: <span id="entry-rate">0</span> / min</p>
+          </article>
+
+          <article class="card kpi-card">
+            <div class="kpi-head">
+              <h2>Exit Count</h2>
+              <span class="kpi-context">Last 30 seconds</span>
+            </div>
+            <p class="metric" id="exit-count-30s">0</p>
+            <p class="metric-subtext">Estimated rate: <span id="exit-rate">0</span> / min</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="grid content-grid">
+        <article class="card trend-card">
+          <div class="section-header">
+            <div>
+              <h2>15-Minute Trend</h2>
+              <p class="section-subtext">Rolling 30-second counts over time.</p>
+            </div>
+            <div class="section-actions">
+              <div class="chip-group" id="trend-range-controls">
+                <button type="button" class="chip-button is-active" data-range="15m">15 min</button>
+                <button type="button" class="chip-button" data-range="1h">1 hr</button>
+                <button type="button" class="chip-button" data-range="today">Today</button>
+              </div>
+              <div class="pill subtle" id="trend-range-label">Last 15 min</div>
+            </div>
+          </div>
+          <div class="trend-legend">
+            <span><i class="legend-swatch legend-entry"></i>Entry Count (30s)</span>
+            <span><i class="legend-swatch legend-exit"></i>Exit Count (30s)</span>
+            <span><i class="legend-swatch legend-crossings"></i>Crossings (30s)</span>
+          </div>
+          <div class="trend-chart-wrap">
+            <svg
+              id="trend-chart"
+              class="trend-chart"
+              viewBox="0 0 760 240"
+              preserveAspectRatio="none"
+              role="img"
+              aria-label="Rolling trend chart"
+            ></svg>
+            <div class="trend-empty" id="trend-empty">Loading trend...</div>
+          </div>
         </article>
-        <article class="card">
-          <h2>Net Flow / min</h2>
-          <p class="metric" id="net-flow">0</p>
-        </article>
-        <article class="card accent">
-          <h2>Busyness Level</h2>
-          <p class="metric" id="load-level">Low</p>
+
+        <article class="card activity-card">
+          <div class="section-header">
+            <div>
+              <h2>Recent Activity</h2>
+              <p class="section-subtext">Newest confirmed crossings.</p>
+            </div>
+          </div>
+          <ul class="event-list" id="events-body" aria-live="polite">
+            <li class="event-empty">Loading recent events...</li>
+          </ul>
         </article>
       </section>
 
-      <section class="grid info-grid">
-        <article class="card">
-          <h2>Sensor Telemetry</h2>
-          <dl class="kv">
-            <div><dt>Camera</dt><dd id="camera-status">-</dd></div>
-            <div><dt>mmWave</dt><dd id="mmwave-status">-</dd></div>
-            <div><dt>Resolution</dt><dd id="frame-resolution">-</dd></div>
-            <div><dt>Presence</dt><dd id="presence-state">-</dd></div>
-            <div><dt>Freshness</dt><dd id="freshness-ms">-</dd></div>
-            <div><dt>Capture FPS</dt><dd id="delivered-fps">-</dd></div>
-            <div><dt>Detector FPS</dt><dd id="detector-fps">-</dd></div>
-            <div><dt>Gated</dt><dd id="gated-mode">-</dd></div>
-          </dl>
-        </article>
-        <article class="card">
-          <h2>System Telemetry</h2>
-          <dl class="kv">
-            <div><dt>CPU</dt><dd id="cpu-percent">-</dd></div>
-            <div><dt>RAM</dt><dd id="ram-mb">-</dd></div>
-            <div><dt>Temp</dt><dd id="temperature-c">-</dd></div>
-            <div><dt>Confidence</dt><dd id="count-confidence">-</dd></div>
-            <div><dt>Warnings</dt><dd id="warnings">-</dd></div>
-            <div><dt>Audio</dt><dd id="audio-disabled">true</dd></div>
-          </dl>
-        </article>
-      </section>
+      <details class="card detail-toggle detail-section">
+        <summary>
+          <div>
+            <h2>Support Details</h2>
+            <p class="section-subtext">Device and pipeline details for troubleshooting.</p>
+          </div>
+          <span class="pill subtle">Open</span>
+        </summary>
 
-      <section class="card">
-        <h2>Recent Crossing Events</h2>
-        <table class="events">
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Direction</th>
-              <th>Track</th>
-            </tr>
-          </thead>
-          <tbody id="events-body">
-            <tr><td colspan="3">Waiting for events…</td></tr>
-          </tbody>
-        </table>
-      </section>
+        <div class="grid detail-grid">
+          <article class="detail-panel">
+            <h3>Camera Pipeline</h3>
+            <dl class="kv">
+              <div><dt>Resolution</dt><dd id="frame-resolution">-</dd></div>
+              <div><dt>Freshness</dt><dd id="freshness-ms">-</dd></div>
+              <div><dt>Capture FPS</dt><dd id="delivered-fps">-</dd></div>
+              <div><dt>Detector FPS</dt><dd id="detector-fps">-</dd></div>
+              <div><dt>Gated</dt><dd id="gated-mode">-</dd></div>
+            </dl>
+          </article>
 
-      <footer class="footer">
-        <a href="/debug">Open local debug view</a>
-        <a href="/settings">Open local settings</a>
-      </footer>
+          <article class="detail-panel">
+            <h3>Host Status</h3>
+            <dl class="kv">
+              <div><dt>CPU</dt><dd id="cpu-percent">-</dd></div>
+              <div><dt>RAM</dt><dd id="ram-mb">-</dd></div>
+              <div><dt>Temp</dt><dd id="temperature-c">-</dd></div>
+            </dl>
+          </article>
+        </div>
+      </details>
+
+      <details class="card tools-toggle">
+        <summary>
+          <div>
+            <h2>Local Tools</h2>
+            <p class="section-subtext">Calibration, debugging, and validation pages for the team.</p>
+          </div>
+          <span class="pill subtle">Open</span>
+        </summary>
+        <nav class="footer">
+          <a href="/debug">Open local debug view</a>
+          <a href="/settings">Open local settings</a>
+          <a href="/validation">Open local validation</a>
+        </nav>
+      </details>
     </main>
     <script src="/static/app.js"></script>
   </body>

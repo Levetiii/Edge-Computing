@@ -7,63 +7,93 @@
     <link rel="stylesheet" href="/static/app.css">
   </head>
   <body>
-    <main class="shell">
-      <header class="hero">
+    <main class="shell tool-shell">
+      <header class="card tool-header">
         <div>
-          <p class="eyebrow">Local Debug / Calibration</p>
+          <p class="dashboard-tag">Local calibration workspace</p>
           <h1>Live Settings</h1>
+          <p class="dashboard-copy">Adjust geometry, detector behavior, and busyness thresholds. Saving applies the changes immediately to the running service and writes them back to the active YAML config.</p>
         </div>
-        <div class="pill">Local only</div>
+        <div class="tool-header-side">
+          <div class="pill">Local only</div>
+          <div class="tool-status" id="settings-status">Loading settings...</div>
+        </div>
       </header>
 
-      <section class="card">
-        <p class="settings-copy">
-          Edit calibration values here. Changes apply immediately to the running service and are saved back to the active YAML config.
-        </p>
-        <div class="settings-status" id="settings-status">Loading settingsâ€¦</div>
+      <section class="card tool-banner">
+        <div>
+          <h2>Apply changes</h2>
+          <p class="settings-copy">Use save after updating any values below. Reload restores the latest values from the config file.</p>
+        </div>
+        <div class="settings-buttons action-buttons">
+          <button form="settings-form" type="submit">Save and apply</button>
+          <button type="button" id="settings-reload" class="secondary">Reload from file</button>
+        </div>
       </section>
 
-      <form id="settings-form" class="grid settings-grid">
-        <section class="card">
-          <h2>ROI</h2>
-          <div class="settings-fields">
-            <label><span>x1</span><input id="roi-x1" type="number" required></label>
-            <label><span>y1</span><input id="roi-y1" type="number" required></label>
-            <label><span>x2</span><input id="roi-x2" type="number" required></label>
-            <label><span>y2</span><input id="roi-y2" type="number" required></label>
+      <form id="settings-form" class="grid settings-layout">
+        <section class="card settings-panel settings-panel-wide">
+          <div class="section-header">
+            <div>
+              <h2>Geometry</h2>
+              <p class="section-subtext">Set the doorway region of interest and the line that confirms a crossing.</p>
+            </div>
+          </div>
+          <div class="settings-clusters">
+            <article class="settings-cluster">
+              <h3>ROI</h3>
+              <p class="settings-note">Detection runs inside this rectangle only.</p>
+              <div class="settings-fields compact">
+                <label><span>x1</span><input id="roi-x1" type="number" required></label>
+                <label><span>y1</span><input id="roi-y1" type="number" required></label>
+                <label><span>x2</span><input id="roi-x2" type="number" required></label>
+                <label><span>y2</span><input id="roi-y2" type="number" required></label>
+              </div>
+            </article>
+
+            <article class="settings-cluster">
+              <h3>Counting Line</h3>
+              <p class="settings-note">Tracks must cross this line to create an entry or exit event.</p>
+              <div class="settings-fields compact">
+                <label><span>x1</span><input id="line-x1" type="number" required></label>
+                <label><span>y1</span><input id="line-y1" type="number" required></label>
+                <label><span>x2</span><input id="line-x2" type="number" required></label>
+                <label><span>y2</span><input id="line-y2" type="number" required></label>
+              </div>
+            </article>
           </div>
         </section>
 
-        <section class="card">
-          <h2>Counting Line</h2>
-          <div class="settings-fields">
-            <label><span>x1</span><input id="line-x1" type="number" required></label>
-            <label><span>y1</span><input id="line-y1" type="number" required></label>
-            <label><span>x2</span><input id="line-x2" type="number" required></label>
-            <label><span>y2</span><input id="line-y2" type="number" required></label>
-          </div>
-        </section>
-
-        <section class="card">
+        <section class="card settings-panel">
           <h2>Counting Stability</h2>
+          <p class="settings-note">Controls that reduce jitter and repeated counts.</p>
           <div class="settings-fields">
             <label><span>Crossing cooldown (s)</span><input id="crossing-cooldown" type="number" min="0" step="0.1" required></label>
             <label><span>Line hysteresis (px)</span><input id="line-hysteresis" type="number" min="0" step="1" required></label>
+            <label><span>Min track hits for crossing</span><input id="min-track-hits" type="number" min="1" step="1" required></label>
+            <label><span>Crossing confirm frames</span><input id="crossing-confirm-frames" type="number" min="1" step="1" required></label>
             <label><span>Detector FPS normal</span><input id="detector-fps-normal" type="number" min="1" step="0.5" required></label>
             <label><span>Detector FPS gated</span><input id="detector-fps-gated" type="number" min="1" step="0.5" required></label>
           </div>
+          <p class="settings-note">Lower track-hit and confirm-frame values make counting more sensitive, but can increase false counts near the line.</p>
         </section>
 
-        <section class="card">
+        <section class="card settings-panel">
           <h2>Detector</h2>
+          <p class="settings-note">Confidence and image size control detection quality versus speed.</p>
           <div class="settings-fields">
             <label><span>Confidence threshold</span><input id="confidence-threshold" type="number" min="0.05" max="0.95" step="0.01" required></label>
             <label><span>Inference image size</span><input id="imgsz" type="number" min="128" step="32" required></label>
+            <label><span>Min detection width (px)</span><input id="min-detection-width" type="number" min="1" step="1" required></label>
+            <label><span>Min detection height (px)</span><input id="min-detection-height" type="number" min="1" step="1" required></label>
+            <label><span>Edge margin filter (px)</span><input id="detection-edge-margin" type="number" min="0" step="1" required></label>
           </div>
+          <p class="settings-note">Lower size and edge-margin thresholds make detection more permissive, but can admit partial or noisy boxes.</p>
         </section>
 
-        <section class="card">
+        <section class="card settings-panel">
           <h2>Busyness / Load</h2>
+          <p class="settings-note">Thresholds that turn rolling crossing counts into Low, Medium, and High labels.</p>
           <div class="settings-fields">
             <label><span>Medium threshold</span><input id="crossing-band-medium" type="number" min="1" step="1" required></label>
             <label><span>High threshold</span><input id="crossing-band-high" type="number" min="2" step="1" required></label>
@@ -71,19 +101,12 @@
             <label><span>Promote hold (s)</span><input id="promote-seconds" type="number" min="1" step="1" required></label>
           </div>
         </section>
-
-        <section class="card settings-actions">
-          <h2>Apply</h2>
-          <div class="settings-buttons">
-            <button type="submit">Save and apply</button>
-            <button type="button" id="settings-reload" class="secondary">Reload from file</button>
-          </div>
-        </section>
       </form>
 
-      <footer class="footer">
+      <footer class="footer tool-footer">
         <a href="/">Back to dashboard</a>
         <a href="/debug">Back to debug</a>
+        <a href="/validation">Open local validation</a>
       </footer>
     </main>
     <script src="/static/app.js"></script>

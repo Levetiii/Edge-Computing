@@ -43,6 +43,11 @@ class CameraConfig(BaseModel):
     detector_fps_gated: float = 3.0
     crossing_cooldown_seconds: float = 1.5
     line_hysteresis_px: int = 24
+    min_detection_width_px: int = 28
+    min_detection_height_px: int = 56
+    detection_edge_margin_px: int = 12
+    min_track_hits_for_crossing: int = 3
+    crossing_confirm_frames: int = 2
     active_track_promote_threshold: int = 3
     active_track_promote_seconds: int = 5
 

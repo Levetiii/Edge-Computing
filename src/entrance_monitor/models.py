@@ -119,6 +119,7 @@ class TrackObservation(BaseModel):
     bbox: BoundingBox
     centroid_x: float
     centroid_y: float
+    hit_count: int = 1
 
 
 class CrossingDirection(str, Enum):
@@ -194,3 +195,54 @@ class RecentEventsPayload(BaseModel):
     schema_version: str
     ts: datetime
     events: list[CrossingEvent]
+
+
+class ValidationState(str, Enum):
+    NOT_STARTED = "NOT_STARTED"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+
+
+class ValidationSessionPayload(BaseModel):
+    schema_version: str
+    session_id: str | None = None
+    state: ValidationState
+    active: bool
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    saved_at: datetime | None = None
+    duration_seconds: float = 0.0
+    manual_entry_count: int = 0
+    manual_exit_count: int = 0
+    manual_total_count: int = 0
+    system_entry_count: int = 0
+    system_exit_count: int = 0
+    system_total_count: int = 0
+    entry_error: int = 0
+    exit_error: int = 0
+    total_error: int = 0
+    recent_events: list[CrossingEvent] = Field(default_factory=list)
+
+
+class ValidationSessionRecord(BaseModel):
+    session_id: str
+    state: ValidationState
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    saved_at: datetime
+    duration_seconds: float = 0.0
+    manual_entry_count: int = 0
+    manual_exit_count: int = 0
+    manual_total_count: int = 0
+    system_entry_count: int = 0
+    system_exit_count: int = 0
+    system_total_count: int = 0
+    entry_error: int = 0
+    exit_error: int = 0
+    total_error: int = 0
+    config_snapshot: dict = Field(default_factory=dict)
+
+
+class ValidationHistoryPayload(BaseModel):
+    schema_version: str
+    items: list[ValidationSessionRecord] = Field(default_factory=list)

@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="/static/app.css">
+  </head>
+  <body>
+    <main class="shell tool-shell">
+      <header class="card tool-header">
+        <div>
+          <p class="dashboard-tag">Local validation workspace</p>
+          <h1>Validation Session</h1>
+          <p class="dashboard-copy">Run a manual ground-truth session, tally real crossings, and compare them against the system counts for the same period.</p>
+        </div>
+        <div class="tool-header-side">
+          <div class="pill">Local only</div>
+          <div class="tool-status" id="validation-status">Loading validation session...</div>
+        </div>
+      </header>
+
+      <section class="grid validation-layout">
+        <article class="card validation-panel">
+          <div class="section-header">
+            <div>
+              <h2>Live 30s Snapshot</h2>
+              <p class="section-subtext">Rolling live metrics from the running system. These are not the session totals below.</p>
+            </div>
+          </div>
+          <dl class="kv">
+            <div><dt>Busyness Level</dt><dd id="load-level">Low</dd></div>
+            <div><dt>Entry Count (30s)</dt><dd id="entry-count-30s">0</dd></div>
+            <div><dt>Exit Count (30s)</dt><dd id="exit-count-30s">0</dd></div>
+            <div><dt>Crossings (30s)</dt><dd id="crossing-count-30s">0</dd></div>
+            <div><dt>Entry Rate / min</dt><dd id="entry-rate">0</dd></div>
+            <div><dt>Exit Rate / min</dt><dd id="exit-rate">0</dd></div>
+            <div><dt>Net Flow / min</dt><dd id="net-flow">0</dd></div>
+          </dl>
+        </article>
+
+        <article class="card validation-panel">
+          <div class="section-header">
+            <div>
+              <h2>Session Controls</h2>
+              <p class="section-subtext">Start a run, log manual ground truth while it is active, then stop it to save the result.</p>
+            </div>
+          </div>
+          <div class="settings-buttons validation-buttons">
+            <button type="button" id="validation-start">Start session</button>
+            <button type="button" id="validation-stop" class="secondary">Stop session</button>
+            <button type="button" id="validation-reset" class="secondary">Reset session</button>
+            <button type="button" id="validation-manual-entry">Manual +Entry</button>
+            <button type="button" id="validation-manual-exit">Manual +Exit</button>
+          </div>
+          <dl class="kv validation-meta">
+            <div><dt>State</dt><dd id="validation-state">NOT_STARTED</dd></div>
+            <div><dt>Active</dt><dd id="validation-active">no</dd></div>
+            <div><dt>Started</dt><dd id="validation-started-at">-</dd></div>
+            <div><dt>Ended</dt><dd id="validation-ended-at">-</dd></div>
+            <div><dt>Session ID</dt><dd id="validation-session-id">-</dd></div>
+            <div><dt>Saved</dt><dd id="validation-saved-at">-</dd></div>
+            <div><dt>Duration</dt><dd id="validation-duration">0.0 s</dd></div>
+          </dl>
+        </article>
+      </section>
+
+      <section class="grid validation-summary-grid">
+        <article class="card validation-panel">
+          <h2>Manual Ground Truth</h2>
+          <dl class="kv">
+            <div><dt>Manual Entry</dt><dd id="validation-manual-entry-count">0</dd></div>
+            <div><dt>Manual Exit</dt><dd id="validation-manual-exit-count">0</dd></div>
+            <div><dt>Manual Total</dt><dd id="validation-manual-total">0</dd></div>
+          </dl>
+        </article>
+
+        <article class="card validation-panel">
+          <h2>System Counts</h2>
+          <dl class="kv">
+            <div><dt>System Entry</dt><dd id="validation-system-entry-count">0</dd></div>
+            <div><dt>System Exit</dt><dd id="validation-system-exit-count">0</dd></div>
+            <div><dt>System Total</dt><dd id="validation-system-total">0</dd></div>
+          </dl>
+        </article>
+
+        <article class="card validation-panel accent">
+          <h2>Result Summary</h2>
+          <dl class="kv">
+            <div><dt>Entry Error</dt><dd id="validation-entry-error">0</dd></div>
+            <div><dt>Exit Error</dt><dd id="validation-exit-error">0</dd></div>
+            <div><dt>Total Error</dt><dd id="validation-total-error">0</dd></div>
+          </dl>
+        </article>
+      </section>
+
+      <section class="card validation-panel">
+        <div class="section-header">
+          <div>
+            <h2>Session Events</h2>
+            <p class="section-subtext">Crossings recorded during the current validation session.</p>
+          </div>
+        </div>
+        <table class="events">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Direction</th>
+              <th>Track</th>
+            </tr>
+          </thead>
+          <tbody id="validation-events-body">
+            <tr><td colspan="3">No session events</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="card validation-panel">
+        <div class="section-header">
+          <div>
+            <h2>Saved Sessions</h2>
+            <p class="section-subtext">Completed runs saved locally with their calibration snapshot for later review.</p>
+          </div>
+          <div class="section-actions">
+            <button type="button" id="validation-export" class="secondary">Export CSV</button>
+          </div>
+        </div>
+        <table class="events">
+          <thead>
+            <tr>
+              <th>Saved</th>
+              <th>Session</th>
+              <th>Manual</th>
+              <th>System</th>
+              <th>Total Error</th>
+              <th>Config</th>
+            </tr>
+          </thead>
+          <tbody id="validation-history-body">
+            <tr><td colspan="6">No saved sessions</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <footer class="footer tool-footer">
+        <a href="/">Back to dashboard</a>
+        <a href="/debug">Back to debug</a>
+        <a href="/settings">Back to settings</a>
+      </footer>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+  </html>

@@ -49,6 +49,19 @@ class StorageWriter:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS validation_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    started_at TEXT,
+                    ended_at TEXT,
+                    saved_at TEXT NOT NULL,
+                    total_error INTEGER NOT NULL,
+                    payload TEXT NOT NULL,
+                    config_snapshot TEXT NOT NULL
+                )
+                """
+            )
 
     def start(self) -> None:
         self._running.set()
@@ -58,7 +71,8 @@ class StorageWriter:
     def stop(self) -> None:
         self._running.clear()
         if self._thread:
-            self._thread.join(timeout=2)
+            self.queue.put(("__stop__", utc_now(), {}))
+            self._thread.join(timeout=5)
 
     def enqueue_snapshot(self, snapshot: MetricsSnapshot) -> None:
         now = utc_now()
@@ -94,11 +108,61 @@ class StorageWriter:
             ).fetchall()
         return [json.loads(row[0]) for row in rows]
 
+    def save_validation_session(self, payload: dict, config_snapshot: dict, saved_at: str) -> None:
+        stored_payload = dict(payload)
+        stored_payload["saved_at"] = saved_at
+        with sqlite3.connect(self.sqlite_path) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO validation_sessions(
+                    session_id,
+                    started_at,
+                    ended_at,
+                    saved_at,
+                    total_error,
+                    payload,
+                    config_snapshot
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stored_payload["session_id"],
+                    stored_payload.get("started_at"),
+                    stored_payload.get("ended_at"),
+                    saved_at,
+                    stored_payload.get("total_error", 0),
+                    json.dumps(stored_payload),
+                    json.dumps(config_snapshot),
+                ),
+            )
+
+    def validation_sessions(self, limit: int = 20) -> list[dict]:
+        with sqlite3.connect(self.sqlite_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT payload, config_snapshot
+                FROM validation_sessions
+                ORDER BY COALESCE(ended_at, started_at, saved_at) DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        items: list[dict] = []
+        for payload_raw, config_raw in rows:
+            item = json.loads(payload_raw)
+            item["config_snapshot"] = json.loads(config_raw)
+            items.append(item)
+        return items
+
     def _run(self) -> None:
-        while self._running.is_set():
+        while self._running.is_set() or not self.queue.empty():
             try:
                 kind, _, payload = self.queue.get(timeout=0.5)
             except queue.Empty:
+                continue
+            if kind == "__stop__":
+                if self.queue.empty():
+                    self.backlog.oldest_item_ts = None
                 continue
             with sqlite3.connect(self.sqlite_path) as conn:
                 if kind == "snapshot":
@@ -130,3 +194,4 @@ class StorageWriter:
         with sqlite3.connect(self.sqlite_path) as conn:
             conn.execute("DELETE FROM snapshots WHERE ts < ?", (cutoff,))
             conn.execute("DELETE FROM crossing_events WHERE ts < ?", (cutoff,))
+            conn.execute("DELETE FROM validation_sessions WHERE saved_at < ?", (cutoff,))

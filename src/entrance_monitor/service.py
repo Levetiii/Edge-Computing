@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import math
 import queue
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterator
+from uuid import uuid4
 
 import cv2
 try:
@@ -17,7 +19,7 @@ except ImportError:  # pragma: no cover
     psutil = None
 
 from .camera import CameraSource
-from .config import Settings, save_settings
+from .config import Settings, save_settings, settings_to_dict
 from .detector import DetectorBackend, create_detector
 from .mmwave import MmwaveSource
 from .models import (
@@ -34,6 +36,9 @@ from .models import (
     StatusPayload,
     SystemState,
     TrackObservation,
+    ValidationSessionPayload,
+    ValidationSessionRecord,
+    ValidationState,
     WarningFlag,
 )
 from .storage import StorageWriter
@@ -103,6 +108,21 @@ class RuntimeState:
     last_mmwave_state: PresenceCorroborationState = PresenceCorroborationState.UNKNOWN
 
 
+@dataclass
+class ValidationSessionState:
+    session_id: str | None = None
+    active: bool = False
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    saved_at: datetime | None = None
+    persisted: bool = False
+    manual_entry_count: int = 0
+    manual_exit_count: int = 0
+    system_entry_count: int = 0
+    system_exit_count: int = 0
+    recent_events: deque[CrossingEvent] = field(default_factory=lambda: deque(maxlen=200))
+
+
 class EdgeService:
     def __init__(self, settings: Settings, config_path: str | Path | None = None) -> None:
         self.settings = settings
@@ -120,6 +140,8 @@ class EdgeService:
             ),
             cooldown_seconds=settings.camera.crossing_cooldown_seconds,
             hysteresis_px=float(settings.camera.line_hysteresis_px),
+            min_track_hits=settings.camera.min_track_hits_for_crossing,
+            confirm_frames=settings.camera.crossing_confirm_frames,
         )
         self.storage = StorageWriter(
             sqlite_path=settings.storage.sqlite_path,
@@ -142,6 +164,7 @@ class EdgeService:
         self._latest_packet: FramePacket | None = None
         self._latest_detections_count: int = 0
         self._latest_tracks: list[TrackObservation] = []
+        self._validation_session = ValidationSessionState()
         self._lock = threading.Lock()
 
     def start(self) -> None:
@@ -177,6 +200,92 @@ class EdgeService:
     def history(self, minutes: int) -> list[dict]:
         return self.storage.history(minutes)
 
+    def validation_payload(self, limit: int = 50) -> ValidationSessionPayload:
+        with self._lock:
+            session = self._validation_session
+            state = ValidationState.NOT_STARTED
+            if session.started_at is not None:
+                state = ValidationState.RUNNING if session.active else ValidationState.COMPLETED
+            ended_at = session.ended_at
+            now = utc_now()
+            duration_source = ended_at or now
+            duration_seconds = 0.0
+            if session.started_at is not None:
+                duration_seconds = max(0.0, (duration_source - session.started_at).total_seconds())
+            recent_events = list(session.recent_events)[-limit:]
+            manual_total = session.manual_entry_count + session.manual_exit_count
+            system_total = session.system_entry_count + session.system_exit_count
+            return ValidationSessionPayload(
+                schema_version=self.settings.app.schema_version,
+                session_id=session.session_id,
+                state=state,
+                active=session.active,
+                started_at=session.started_at,
+                ended_at=ended_at,
+                saved_at=session.saved_at,
+                duration_seconds=duration_seconds,
+                manual_entry_count=session.manual_entry_count,
+                manual_exit_count=session.manual_exit_count,
+                manual_total_count=manual_total,
+                system_entry_count=session.system_entry_count,
+                system_exit_count=session.system_exit_count,
+                system_total_count=system_total,
+                entry_error=session.system_entry_count - session.manual_entry_count,
+                exit_error=session.system_exit_count - session.manual_exit_count,
+                total_error=system_total - manual_total,
+                recent_events=list(reversed(recent_events)),
+            )
+
+    def start_validation_session(self) -> ValidationSessionPayload:
+        with self._lock:
+            if self._validation_session.active:
+                raise ValueError("Validation session is already running.")
+            self._validation_session = ValidationSessionState(
+                session_id=f"vs-{uuid4().hex[:12]}",
+                active=True,
+                started_at=utc_now(),
+            )
+        return self.validation_payload()
+
+    def stop_validation_session(self) -> ValidationSessionPayload:
+        should_persist = False
+        with self._lock:
+            if self._validation_session.started_at is None:
+                raise ValueError("Validation session has not started.")
+            if self._validation_session.active:
+                self._validation_session.active = False
+                self._validation_session.ended_at = utc_now()
+            elif self._validation_session.ended_at is None:
+                self._validation_session.ended_at = utc_now()
+            should_persist = not self._validation_session.persisted
+        payload = self.validation_payload()
+        if should_persist and payload.session_id is not None:
+            saved_at = self._persist_validation_session(payload)
+            with self._lock:
+                self._validation_session.persisted = True
+                self._validation_session.saved_at = saved_at
+            payload = self.validation_payload()
+        return payload
+
+    def reset_validation_session(self) -> ValidationSessionPayload:
+        with self._lock:
+            self._validation_session = ValidationSessionState()
+        return self.validation_payload()
+
+    def add_manual_validation_count(self, direction: CrossingDirection) -> ValidationSessionPayload:
+        with self._lock:
+            if not self._validation_session.active:
+                raise ValueError("Start validation session first.")
+            if direction == CrossingDirection.ENTRY:
+                self._validation_session.manual_entry_count += 1
+            else:
+                self._validation_session.manual_exit_count += 1
+        return self.validation_payload()
+
+    def validation_history(self, limit: int = 20) -> list[ValidationSessionRecord]:
+        items = self.storage.validation_sessions(limit=limit)
+        return [ValidationSessionRecord.model_validate(item) for item in items]
+
     def settings_payload(self) -> dict:
         return {
             "schema_version": self.settings.app.schema_version,
@@ -193,6 +302,11 @@ class EdgeService:
                 "detector_fps_gated": self.settings.camera.detector_fps_gated,
                 "crossing_cooldown_seconds": self.settings.camera.crossing_cooldown_seconds,
                 "line_hysteresis_px": self.settings.camera.line_hysteresis_px,
+                "min_detection_width_px": self.settings.camera.min_detection_width_px,
+                "min_detection_height_px": self.settings.camera.min_detection_height_px,
+                "detection_edge_margin_px": self.settings.camera.detection_edge_margin_px,
+                "min_track_hits_for_crossing": self.settings.camera.min_track_hits_for_crossing,
+                "crossing_confirm_frames": self.settings.camera.crossing_confirm_frames,
                 "active_track_promote_threshold": self.settings.camera.active_track_promote_threshold,
                 "active_track_promote_seconds": self.settings.camera.active_track_promote_seconds,
             },
@@ -210,47 +324,57 @@ class EdgeService:
 
     def update_editable_settings(self, payload: dict) -> dict:
         with self._lock:
-            camera_payload = payload.get("camera", {})
-            detector_payload = payload.get("detector", {})
-            runtime_payload = payload.get("runtime", {})
+            candidate = self.settings.model_copy(deep=True)
+        camera_payload = payload.get("camera", {})
+        detector_payload = payload.get("detector", {})
+        runtime_payload = payload.get("runtime", {})
 
-            roi_payload = camera_payload.get("roi", {})
-            line_payload = camera_payload.get("line", {})
+        roi_payload = camera_payload.get("roi", {})
+        line_payload = camera_payload.get("line", {})
 
-            for field in ("x1", "y1", "x2", "y2"):
-                if field in roi_payload:
-                    setattr(self.settings.camera.roi, field, int(roi_payload[field]))
-                if field in line_payload:
-                    setattr(self.settings.camera.line, field, int(line_payload[field]))
+        for field in ("x1", "y1", "x2", "y2"):
+            if field in roi_payload:
+                setattr(candidate.camera.roi, field, int(roi_payload[field]))
+            if field in line_payload:
+                setattr(candidate.camera.line, field, int(line_payload[field]))
 
-            for field in (
-                "detector_fps_normal",
-                "detector_fps_gated",
-                "crossing_cooldown_seconds",
-                "line_hysteresis_px",
-                "active_track_promote_threshold",
-                "active_track_promote_seconds",
-            ):
-                if field in camera_payload:
-                    current = getattr(self.settings.camera, field)
-                    setattr(self.settings.camera, field, type(current)(camera_payload[field]))
+        for field in (
+            "detector_fps_normal",
+            "detector_fps_gated",
+            "crossing_cooldown_seconds",
+            "line_hysteresis_px",
+            "min_detection_width_px",
+            "min_detection_height_px",
+            "detection_edge_margin_px",
+            "min_track_hits_for_crossing",
+            "crossing_confirm_frames",
+            "active_track_promote_threshold",
+            "active_track_promote_seconds",
+        ):
+            if field in camera_payload:
+                current = getattr(candidate.camera, field)
+                setattr(candidate.camera, field, type(current)(camera_payload[field]))
 
-            for field in ("confidence_threshold", "imgsz"):
-                if field in detector_payload:
-                    current = getattr(self.settings.detector, field)
-                    setattr(self.settings.detector, field, type(current)(detector_payload[field]))
+        for field in ("confidence_threshold", "imgsz"):
+            if field in detector_payload:
+                current = getattr(candidate.detector, field)
+                setattr(candidate.detector, field, type(current)(detector_payload[field]))
 
-            for field in ("crossing_band_medium_threshold", "crossing_band_high_threshold"):
-                if field in runtime_payload:
-                    current = getattr(self.settings.runtime, field)
-                    setattr(self.settings.runtime, field, type(current)(runtime_payload[field]))
+        for field in ("crossing_band_medium_threshold", "crossing_band_high_threshold"):
+            if field in runtime_payload:
+                current = getattr(candidate.runtime, field)
+                setattr(candidate.runtime, field, type(current)(runtime_payload[field]))
 
-            self._validate_editable_settings()
-            self.counter.cooldown_seconds = self.settings.camera.crossing_cooldown_seconds
-            self.counter.hysteresis_px = float(self.settings.camera.line_hysteresis_px)
-            self.detector.apply_config(self.settings.detector)
-            if self.config_path is not None:
-                save_settings(self.config_path, self.settings)
+        self._validate_editable_settings(candidate)
+        if self.config_path is not None:
+            save_settings(self.config_path, candidate)
+        with self._lock:
+            self.settings = candidate
+            self.counter.cooldown_seconds = candidate.camera.crossing_cooldown_seconds
+            self.counter.hysteresis_px = float(candidate.camera.line_hysteresis_px)
+            self.counter.min_track_hits = candidate.camera.min_track_hits_for_crossing
+            self.counter.confirm_frames = candidate.camera.crossing_confirm_frames
+            self.detector.apply_config(candidate.detector)
             return self.settings_payload()
 
     def subscribe_stream(self) -> Iterator[str]:
@@ -304,11 +428,14 @@ class EdgeService:
         self._detector_run_samples.append(now)
         self.counter.line = self._roi_local_line(packet)
         detection_packet = self.detector.detect(packet.frame_id, packet.ts, packet.roi_image)
+        detection_packet.detections = self._filter_detections(packet, detection_packet.detections)
         observations = self.tracker.update(detection_packet.detections, detection_packet.ts)
+        self.counter.prune(self.tracker.active_track_ids())
         events = self.counter.update(observations, detection_packet.ts)
         for event in events:
             self._events_30s.append(event)
             self._recent_events.append(event)
+            self._record_validation_event(event)
             self.storage.enqueue_event(event)
         self._prune_old_windows(now)
         self._active_track_samples.append((now, len(observations)))
@@ -455,7 +582,7 @@ class EdgeService:
         if age_ms > self.settings.runtime.camera_stale_age_ms:
             return CameraStatus.STALE
         drop_ratio = self._drop_ratio.ratio(now)
-        expected_fps = self.camera.stats.expected_fps or float(self.settings.camera.fps)
+        expected_fps = self.camera.stats.expected_fps if self.camera.stats.expected_fps >= 1.0 else float(self.settings.camera.fps)
         fps_floor = expected_fps * 0.6
         if drop_ratio > self.settings.runtime.high_drop_ratio_threshold or (
             self.camera.stats.delivered_fps > 0 and self.camera.stats.delivered_fps < fps_floor
@@ -593,6 +720,28 @@ class EdgeService:
     def _publish_backlog_age_ms(self) -> int:
         return max(self.sse.backlog_age_ms(), self.storage.backlog_age_ms())
 
+    def _record_validation_event(self, event: CrossingEvent) -> None:
+        with self._lock:
+            if not self._validation_session.active:
+                return
+            self._validation_session.recent_events.append(event)
+            if event.direction == CrossingDirection.ENTRY:
+                self._validation_session.system_entry_count += 1
+            else:
+                self._validation_session.system_exit_count += 1
+
+    def _persist_validation_session(self, payload: ValidationSessionPayload) -> datetime:
+        saved_at = utc_now()
+        config_snapshot = settings_to_dict(self.settings)
+        if self.config_path is not None:
+            config_snapshot["config_path"] = str(self.config_path)
+        self.storage.save_validation_session(
+            payload=payload.model_dump(mode="json"),
+            config_snapshot=config_snapshot,
+            saved_at=isoformat(saved_at),
+        )
+        return saved_at
+
     def _roi_local_line(self, packet: FramePacket) -> tuple[int, int, int, int]:
         x1 = max(0, min(packet.roi_width - 1, packet.line_x1 - packet.roi_x1))
         y1 = max(0, min(packet.roi_height - 1, packet.line_y1 - packet.roi_y1))
@@ -600,17 +749,50 @@ class EdgeService:
         y2 = max(0, min(packet.roi_height - 1, packet.line_y2 - packet.roi_y1))
         return x1, y1, x2, y2
 
-    def _validate_editable_settings(self) -> None:
-        if self.settings.camera.roi.x2 <= self.settings.camera.roi.x1:
+    def _filter_detections(self, packet: FramePacket, detections: list) -> list:
+        configured_roi_width = max(1, self.settings.camera.roi.x2 - self.settings.camera.roi.x1)
+        configured_roi_height = max(1, self.settings.camera.roi.y2 - self.settings.camera.roi.y1)
+        width_scale = packet.roi_width / configured_roi_width
+        height_scale = packet.roi_height / configured_roi_height
+        min_width = max(1, int(round(self.settings.camera.min_detection_width_px * width_scale)))
+        min_height = max(1, int(round(self.settings.camera.min_detection_height_px * height_scale)))
+        edge_margin = max(0, int(round(self.settings.camera.detection_edge_margin_px * width_scale)))
+        filtered = []
+        for detection in detections:
+            width = detection.bbox.x2 - detection.bbox.x1
+            height = detection.bbox.y2 - detection.bbox.y1
+            if width < min_width or height < min_height:
+                continue
+            if edge_margin > 0:
+                left_clipped = detection.bbox.x1 <= edge_margin
+                right_clipped = detection.bbox.x2 >= packet.roi_width - edge_margin
+                if left_clipped or right_clipped:
+                    continue
+            filtered.append(detection)
+        return filtered
+
+    def _validate_editable_settings(self, settings: Settings | None = None) -> None:
+        settings = self.settings if settings is None else settings
+        if settings.camera.roi.x2 <= settings.camera.roi.x1:
             raise ValueError("ROI x2 must be greater than x1.")
-        if self.settings.camera.roi.y2 <= self.settings.camera.roi.y1:
+        if settings.camera.roi.y2 <= settings.camera.roi.y1:
             raise ValueError("ROI y2 must be greater than y1.")
-        if self.settings.runtime.crossing_band_high_threshold <= self.settings.runtime.crossing_band_medium_threshold:
+        if settings.runtime.crossing_band_high_threshold <= settings.runtime.crossing_band_medium_threshold:
             raise ValueError("High busyness threshold must be greater than medium threshold.")
-        if self.settings.camera.crossing_cooldown_seconds < 0.0:
+        if settings.camera.crossing_cooldown_seconds < 0.0:
             raise ValueError("Crossing cooldown must be non-negative.")
-        if self.settings.camera.line_hysteresis_px < 0:
+        if settings.camera.line_hysteresis_px < 0:
             raise ValueError("Line hysteresis must be non-negative.")
+        if settings.camera.min_detection_width_px < 1:
+            raise ValueError("Minimum detection width must be at least 1 px.")
+        if settings.camera.min_detection_height_px < 1:
+            raise ValueError("Minimum detection height must be at least 1 px.")
+        if settings.camera.detection_edge_margin_px < 0:
+            raise ValueError("Detection edge margin must be non-negative.")
+        if settings.camera.min_track_hits_for_crossing < 1:
+            raise ValueError("Minimum track hits for crossing must be at least 1.")
+        if settings.camera.crossing_confirm_frames < 1:
+            raise ValueError("Crossing confirm frames must be at least 1.")
 
     def _detector_fps(self, now: datetime) -> float:
         while self._detector_run_samples and (now - self._detector_run_samples[0]).total_seconds() > 1.0:
@@ -686,6 +868,69 @@ class EdgeService:
             pass
         return throttled, undervoltage
 
+    def _draw_line_direction_guides(self, frame, packet: FramePacket) -> None:
+        dx = packet.line_x2 - packet.line_x1
+        dy = packet.line_y2 - packet.line_y1
+        length = math.hypot(dx, dy)
+        if length <= 0.0:
+            return
+        tangent_x = dx / length
+        tangent_y = dy / length
+        normal_x = -dy / length
+        normal_y = dx / length
+        mid_x = int(round((packet.line_x1 + packet.line_x2) / 2))
+        mid_y = int(round((packet.line_y1 + packet.line_y2) / 2))
+        line_half = max(18, min(40, int(length * 0.18)))
+        arrow_len = 44
+
+        entry_anchor = (
+            int(round(mid_x - tangent_x * line_half)),
+            int(round(mid_y - tangent_y * line_half)),
+        )
+        exit_anchor = (
+            int(round(mid_x + tangent_x * line_half)),
+            int(round(mid_y + tangent_y * line_half)),
+        )
+        entry_tip = (
+            int(round(entry_anchor[0] + normal_x * arrow_len)),
+            int(round(entry_anchor[1] + normal_y * arrow_len)),
+        )
+        exit_tip = (
+            int(round(exit_anchor[0] - normal_x * arrow_len)),
+            int(round(exit_anchor[1] - normal_y * arrow_len)),
+        )
+
+        cv2.arrowedLine(frame, entry_anchor, entry_tip, (60, 220, 120), 2, tipLength=0.25)
+        cv2.arrowedLine(frame, exit_anchor, exit_tip, (0, 190, 255), 2, tipLength=0.25)
+
+        entry_label_pos = (
+            max(10, min(frame.shape[1] - 80, entry_tip[0] + int(normal_x * 10))),
+            max(24, min(frame.shape[0] - 10, entry_tip[1] + int(normal_y * 10))),
+        )
+        exit_label_pos = (
+            max(10, min(frame.shape[1] - 70, exit_tip[0] - int(normal_x * 18))),
+            max(24, min(frame.shape[0] - 10, exit_tip[1] - int(normal_y * 18))),
+        )
+
+        cv2.putText(
+            frame,
+            "ENTRY",
+            entry_label_pos,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (60, 220, 120),
+            2,
+        )
+        cv2.putText(
+            frame,
+            "EXIT",
+            exit_label_pos,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 190, 255),
+            2,
+        )
+
     def debug_frame_jpeg(self) -> bytes | None:
         if self._latest_frame is None or self._latest_packet is None:
             return None
@@ -705,6 +950,7 @@ class EdgeService:
             (0, 0, 255),
             2,
         )
+        self._draw_line_direction_guides(frame, packet)
         for obs in self._latest_tracks:
             bbox = obs.bbox
             x1 = bbox.x1 + packet.roi_x1

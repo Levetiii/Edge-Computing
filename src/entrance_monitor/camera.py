@@ -24,6 +24,9 @@ class CameraStats:
     last_frame_ts: datetime | None = None
     delivered_fps: float = 0.0
     expected_fps: float = 0.0
+    negotiated_fps: float = 0.0
+    negotiated_width: int = 0
+    negotiated_height: int = 0
     source_kind: str = "webcam"
 
 
@@ -88,6 +91,12 @@ class CameraSource:
                 if not capture.isOpened():
                     capture.release()
                     continue
+                self._record_capture_profile(
+                    width=int(round(capture.get(cv2.CAP_PROP_FRAME_WIDTH))),
+                    height=int(round(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))),
+                    fps=float(capture.get(cv2.CAP_PROP_FPS)),
+                    clamp_fps=False,
+                )
                 opened = True
                 read_failures = 0
                 try:
@@ -101,6 +110,7 @@ class CameraSource:
                             time.sleep(0.05)
                             continue
                         read_failures = 0
+                        self._record_capture_profile(width=frame.shape[1], height=frame.shape[0])
                         self._emit(frame)
                 finally:
                     capture.release()
@@ -111,6 +121,9 @@ class CameraSource:
     def _run_mock(self) -> None:
         self.stats.source_kind = "mock"
         self.stats.expected_fps = float(self.config.fps)
+        self.stats.negotiated_fps = float(self.config.fps)
+        self.stats.negotiated_width = self.config.width
+        self.stats.negotiated_height = self.config.height
         present = True
         switch_at = time.monotonic() + 4.0
         x = 100
@@ -154,9 +167,13 @@ class CameraSource:
                 time.sleep(min(2.0, self.config.reconnect_seconds))
                 continue
             source_fps = capture.get(cv2.CAP_PROP_FPS)
-            if source_fps and source_fps > 0:
-                self.stats.expected_fps = min(float(source_fps), float(self.config.fps))
-            else:
+            self._record_capture_profile(
+                width=int(round(capture.get(cv2.CAP_PROP_FRAME_WIDTH))),
+                height=int(round(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))),
+                fps=float(source_fps),
+                clamp_fps=True,
+            )
+            if self.stats.expected_fps <= 0.0:
                 self.stats.expected_fps = float(self.config.fps)
             frame_interval = 1.0 / max(self.stats.expected_fps, 1.0)
             try:
@@ -168,6 +185,7 @@ class CameraSource:
                         break
                     if frame.shape[1] != self.config.width or frame.shape[0] != self.config.height:
                         frame = cv2.resize(frame, (self.config.width, self.config.height))
+                    self._record_capture_profile(width=frame.shape[1], height=frame.shape[0])
                     self._emit(frame)
                     elapsed = time.monotonic() - started
                     time.sleep(max(0.0, frame_interval - elapsed))
@@ -230,6 +248,25 @@ class CameraSource:
             roi_image=roi,
         )
         self._set_latest(packet)
+
+    def _record_capture_profile(
+        self,
+        *,
+        width: int | None = None,
+        height: int | None = None,
+        fps: float | None = None,
+        clamp_fps: bool = False,
+    ) -> None:
+        if width is not None and width > 0:
+            self.stats.negotiated_width = int(width)
+        if height is not None and height > 0:
+            self.stats.negotiated_height = int(height)
+        if fps is None:
+            return
+        if 1.0 <= fps <= 240.0:
+            negotiated_fps = float(fps)
+            self.stats.negotiated_fps = negotiated_fps
+            self.stats.expected_fps = min(negotiated_fps, float(self.config.fps)) if clamp_fps else negotiated_fps
 
     def _scaled_roi_bounds(self, frame_width: int, frame_height: int) -> tuple[int, int, int, int]:
         scale_x = frame_width / max(self.config.width, 1)
