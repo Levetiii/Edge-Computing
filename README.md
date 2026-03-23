@@ -9,8 +9,8 @@ Current development webcam: `Logi C270 HD` over USB/UVC.
 - USB webcam first capture path using OpenCV/V4L2
 - mmWave adapter with serial and mock modes
 - Person detection backend abstraction with:
-  - active Ultralytics YOLO webcam path for live detection
-  - HOG fallback detector if you need a no-weights baseline
+  - ONNX Runtime YOLO path for live detection
+  - synthetic mock detector for hardware-free regression testing
 - Lightweight centroid tracker and virtual line crossing
 - Rolling metrics, closed state enums, warning flags, and confidence logic
 - FastAPI read-only REST API
@@ -29,7 +29,7 @@ Current development webcam: `Logi C270 HD` over USB/UVC.
 
 - Camera is the only source of truth for `entry`, `exit`, and `net flow`.
 - mmWave is currently advisory only and is still a placeholder integration until the real module protocol is implemented.
-- Windows development currently uses the Ultralytics Python runtime. The recommended Raspberry Pi delivery path is still `YOLO11n -> ONNX Runtime -> CPU benchmarking/quantization`.
+- Windows and Raspberry Pi now share the same ONNX Runtime detector path, so the app no longer depends on the `torch` or `ultralytics` runtime stack.
 - Tracking is still a lightweight prototype tracker. It is good enough for calibration and basic demos, but not yet equivalent to a production-grade ByteTrack-style association flow.
 - The normal dashboard is metrics-first. `/debug` and `/settings` are local-only and are the only places where raw annotated frames or calibration controls should appear.
 - The current top KPI cards are proposal-facing rates. They are derived from the rolling 30-second counts, so `1 crossing in 30s` will display as `2 / min`.
@@ -41,7 +41,7 @@ Current development webcam: `Logi C270 HD` over USB/UVC.
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -e .[dev,serial,yolo]
+pip install -e .[dev,serial]
 ```
 
 2. Run the current Windows development setup:
@@ -68,13 +68,13 @@ entrance-monitor --config config/default.yaml
 - `config/default.yaml` is the mock baseline:
   - mock camera
   - mock mmWave
-  - HOG detector
+  - mock detector
 - `config/windows-webcam.yaml` is the current Windows development setup:
   - real webcam
-  - Ultralytics YOLO detector
+  - ONNX Runtime YOLO detector
   - mock mmWave
 - `config/windows-video.sample.yaml` is the tracked sample for recorded video playback.
-- `config/pi.sample.yaml` is the tracked Raspberry Pi sample for real camera, serial mmWave, and YOLO.
+- `config/pi.sample.yaml` is the tracked Raspberry Pi sample for real camera, serial mmWave, and ONNX YOLO.
 - `config/windows-video.yaml` and `config/*.local.yaml` are ignored on purpose so machine-specific paths and device settings do not get committed.
 
 You can also tune ROI, line, detector confidence, cooldown, and busyness thresholds from the local-only settings page at `/settings`. Changes are applied immediately and saved back to the active YAML config.
@@ -87,8 +87,8 @@ You can also tune ROI, line, detector confidence, cooldown, and busyness thresho
   - `"serial"` for a real sensor
   - `"mock"` for generated presence events
 - Set `detector.backend` to:
-  - `"ultralytics"` for the current webcam setup
-  - `"hog"` for the built-in baseline fallback
+  - `"onnx"` for the current webcam and Pi setup
+  - `"mock"` for the synthetic regression path
 
 ## Proposal KPI mapping
 
@@ -121,7 +121,7 @@ The most important next changes, based on current product and technique research
 2. Add trend/history charts from `/api/v1/metrics/history`.
 3. Add CSV export and richer result reporting to the validation workflow.
 4. Harden settings persistence with atomic save, rollback, and a settings audit trail.
-5. Move the Pi-target runtime to `ONNX Runtime` and benchmark `YOLO11n` there.
+5. Benchmark the ONNX Runtime path for `YOLO11n` on the Pi and tune confidence/imgsz if needed.
 6. Replace the lightweight centroid tracker with a stronger tracker.
 7. Keep mmWave advisory only until the real protocol and calibration flow are implemented.
 
@@ -157,8 +157,8 @@ Use `config/windows-webcam.yaml` for the current setup:
 
 - `camera.source: 0`
 - `camera.backend: "dshow"`
-- `detector.backend: "ultralytics"`
-- `detector.model_path: "yolo11n.pt"`
+- `detector.backend: "onnx"`
+- `detector.model_path: "yolo11n.onnx"`
 - `mmwave.mode: "mock"`
 
 Run:
@@ -174,8 +174,8 @@ camera:
   source: 0
   backend: "dshow"
 detector:
-  backend: "ultralytics"
-  model_path: "yolo11n.pt"
+  backend: "onnx"
+  model_path: "yolo11n.onnx"
 mmwave:
   mode: "mock"
 ```
@@ -184,11 +184,11 @@ Notes:
 
 - Current development webcam: `Logi C270 HD`
 - If your camera index changes, test `0` and `1` first.
-- The first Ultralytics run may download `yolo11n.pt`; that file is ignored by Git.
+- Export or copy your ONNX model to `yolo11n.onnx`, or update `detector.model_path` to wherever your exported model lives.
 - This is now the primary development path for the project.
 - Raspberry Pi-only telemetry such as `vcgencmd` thermal and undervoltage flags is not available on Windows.
 
-Use `config/default.yaml` when you want the old mock/HOG path:
+Use `config/default.yaml` when you want the mock regression path:
 
 ```powershell
 entrance-monitor --config config/default.yaml
@@ -234,7 +234,7 @@ cd edge
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e .[dev,serial,yolo]
+python -m pip install -e .[dev,serial]
 ```
 
 Check the webcam and serial device:
@@ -263,16 +263,17 @@ mmwave:
   port: "/dev/ttyUSB0"
 
 detector:
-  backend: "ultralytics"
-  model_path: "yolo11n.pt"
+  backend: "onnx"
+  model_path: "yolo11n.onnx"
 ```
 
 Notes:
 
 - Start from `config/pi.sample.yaml`, not `config/windows-webcam.yaml`.
-- Keep `config/default.yaml` for mock/HOG testing only.
+- Keep `config/default.yaml` for mock regression testing only.
 - Tune ROI and line coordinates on the Pi after the real camera is mounted.
 - Change `/dev/ttyUSB0` if your mmWave sensor appears under a different device name.
+- The Pi expects an exported ONNX model file. The repo no longer installs the Ultralytics runtime.
 
 Then run:
 

@@ -6,6 +6,7 @@ __pycache__/
 data/
 *.pyc
 yolo11n.pt
+yolo11n.onnx
 config/windows-video.yaml
 config/*.local.yaml
 docs/

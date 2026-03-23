@@ -42,7 +42,7 @@ mmwave:
   mock_absent_seconds: 12
 
 detector:
-  backend: "hog"
+  backend: "mock"
   model_path: ""
   confidence_threshold: 0.35
   iou_threshold: 0.4

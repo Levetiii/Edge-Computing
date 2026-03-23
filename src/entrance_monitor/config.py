@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class LineConfig(BaseModel):
@@ -67,11 +67,26 @@ class MmwaveConfig(BaseModel):
 
 
 class DetectorConfig(BaseModel):
-    backend: Literal["hog", "ultralytics"] = "hog"
+    backend: Literal["mock", "onnx"] = "mock"
     model_path: str = ""
     confidence_threshold: float = 0.35
     iou_threshold: float = 0.4
     imgsz: int = 416
+
+    @field_validator("backend", mode="before")
+    @classmethod
+    def normalize_legacy_backend(cls, value: str) -> str:
+        if value == "ultralytics":
+            return "onnx"
+        if value == "hog":
+            return "mock"
+        return value
+
+    @model_validator(mode="after")
+    def normalize_legacy_model_path(self) -> "DetectorConfig":
+        if self.backend == "onnx" and self.model_path.endswith(".pt"):
+            self.model_path = str(Path(self.model_path).with_suffix(".onnx"))
+        return self
 
 
 class StorageConfig(BaseModel):

@@ -43,8 +43,8 @@ mmwave:
   mock_absent_seconds: 12
 
 detector:
-  backend: "ultralytics"
-  model_path: "yolo11n.pt"
+  backend: "onnx"
+  model_path: "yolo11n.onnx"
   confidence_threshold: 0.25
   iou_threshold: 0.4
   imgsz: 416
