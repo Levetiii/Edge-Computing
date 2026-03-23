@@ -1,5 +1,5 @@
 app:
-  host: 127.0.0.1
+  host: 0.0.0.0
   port: 8000
   schema_version: "1.0.0"
   data_dir: data
@@ -8,8 +8,8 @@ app:
 camera:
   source: 0
   backend: "v4l2"
-  width: 640
-  height: 480
+  width: 1280
+  height: 720
   fps: 10
   warmup_seconds: 2.0
   reconnect_seconds: 5.0
@@ -23,8 +23,8 @@ camera:
     y1: 150
     x2: 640
     y2: 650
-  detector_fps_normal: 2.0
-  detector_fps_gated: 1.0
+  detector_fps_normal: 10.0
+  detector_fps_gated: 3.0
   crossing_cooldown_seconds: 1.5
   line_hysteresis_px: 24
   active_track_promote_threshold: 3
@@ -42,7 +42,7 @@ detector:
   model_path: "yolo11n.onnx"
   confidence_threshold: 0.25
   iou_threshold: 0.4
-  imgsz: 256
+  imgsz: 320
 
 storage:
   sqlite_path: data/entrance_monitor.db
