@@ -29,7 +29,7 @@ Current development webcam: `Logi C270 HD` over USB/UVC.
 
 - Camera is the only source of truth for `entry`, `exit`, and `net flow`.
 - mmWave is currently advisory only and is still a placeholder integration until the real module protocol is implemented.
-- Windows and Raspberry Pi now share the same ONNX Runtime detector path, so the app no longer depends on the `torch` or `ultralytics` runtime stack.
+- Windows and Raspberry Pi now share the same ONNX Runtime detector path, so the app runtime no longer depends on the `torch` or `ultralytics` stack.
 - Tracking is still a lightweight prototype tracker. It is good enough for calibration and basic demos, but not yet equivalent to a production-grade ByteTrack-style association flow.
 - The normal dashboard is metrics-first. `/debug` and `/settings` are local-only and are the only places where raw annotated frames or calibration controls should appear.
 - The current top KPI cards are proposal-facing rates. They are derived from the rolling 30-second counts, so `1 crossing in 30s` will display as `2 / min`.
@@ -62,6 +62,24 @@ entrance-monitor --config config/default.yaml
 - Local debug view: `http://127.0.0.1:8000/debug`
 - Local settings page: `http://127.0.0.1:8000/settings`
 - Local validation page: `http://127.0.0.1:8000/validation`
+
+## Export the pretrained YOLO model to ONNX
+
+The runtime now expects an ONNX model such as `yolo11n.onnx`. The repo still includes `yolo11n.pt`, which is already pretrained. You do not retrain it; you only export it once.
+
+Install the export helper dependencies:
+
+```powershell
+pip install -e .[export]
+```
+
+Then export:
+
+```powershell
+python scripts/export_onnx.py --weights yolo11n.pt --output yolo11n.onnx --imgsz 416
+```
+
+The app runtime does not need `ultralytics`; only this one-time export step does.
 
 ## Config files
 
@@ -237,6 +255,13 @@ python -m pip install --upgrade pip
 python -m pip install -e .[dev,serial]
 ```
 
+If you need to generate the ONNX model on your development machine first:
+
+```bash
+python -m pip install -e .[export]
+python scripts/export_onnx.py --weights yolo11n.pt --output yolo11n.onnx --imgsz 416
+```
+
 Check the webcam and serial device:
 
 ```bash
@@ -273,7 +298,7 @@ Notes:
 - Keep `config/default.yaml` for mock regression testing only.
 - Tune ROI and line coordinates on the Pi after the real camera is mounted.
 - Change `/dev/ttyUSB0` if your mmWave sensor appears under a different device name.
-- The Pi expects an exported ONNX model file. The repo no longer installs the Ultralytics runtime.
+- The Pi expects an exported ONNX model file. The runtime does not need Ultralytics, but the optional export helper does.
 
 Then run:
 
