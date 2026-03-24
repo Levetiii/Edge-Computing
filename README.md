@@ -1,238 +1,108 @@
 # Entrance Monitor
 
-Edge-first entrance flow and busyness monitoring prototype for Raspberry Pi 5.
+Entrance Monitor is an edge analytics project for the `INF2009: Edge Computing & Analytics` module. It is designed to monitor entrance activity in real time using on-device processing on a Raspberry Pi 5 class deployment target.
 
-Current development webcam: `Logi C270 HD` over USB/UVC.
+The system combines camera-based person detection and tracking with mmWave sensing to estimate entrance flow, busyness, and recent crossing activity. Results are exposed through a local dashboard, API, and validation workflow for calibration and demonstration. The reference development webcam is `Logi C270 HD` over USB/UVC.
 
-## What this includes
+## Core features
 
-- USB webcam first capture path using OpenCV/V4L2
-- mmWave adapter with serial and mock modes
-- Person detection backend abstraction with:
-  - ONNX Runtime YOLO path for live detection
-  - synthetic mock detector for hardware-free regression testing
-- Lightweight centroid tracker and virtual line crossing
-- Rolling metrics, closed state enums, warning flags, and confidence logic
-- FastAPI read-only REST API
-- SSE live stream
-- Operator dashboard and local-only debug/calibration view
-- Local-only settings page for live ROI/line/threshold edits
-- SQLite storage for metrics snapshots and events
+The project integrates these main capabilities:
 
-## What this does not assume
+- Vision pipeline:
+  - webcam or recorded video input
+  - ONNX Runtime person detection
+  - centroid tracking and virtual line crossing
+- mmWave integration:
+  - serial mode for sensor input
+  - mock mode for hardware-independent testing
+  - presence sensing and warning logic
+- Edge service and dashboard:
+  - rolling metrics and recent events
+  - live dashboard and SSE stream
+  - local calibration, configuration, and validation pages
+- Local persistence:
+  - SQLite storage for snapshots, events, and validation sessions
 
-- It does not upload raw media.
-- It does not require cloud inference.
-- It does not require a specific mmWave module to start; mock mode is supported.
+## Repository layout
 
-## Current scope and limitations
+- `config/`: sample and environment-specific configuration files
+- `scripts/`: helper scripts for model and project utilities
+- `src/entrance_monitor/`: runtime, API, storage, and web application code
+- `tests/`: automated test suite
 
-- Camera is the only source of truth for `entry`, `exit`, and `net flow`.
-- mmWave is currently advisory only and is still a placeholder integration until the real module protocol is implemented.
-- Windows and Raspberry Pi now share the same ONNX Runtime detector path, so the app runtime no longer depends on the `torch` or `ultralytics` stack.
-- Tracking is still a lightweight prototype tracker. It is good enough for calibration and basic demos, but not yet equivalent to a production-grade ByteTrack-style association flow.
-- The normal dashboard is metrics-first. `/debug` and `/settings` are local-only and are the only places where raw annotated frames or calibration controls should appear.
-- The current top KPI cards are proposal-facing rates. They are derived from the rolling 30-second counts, so `1 crossing in 30s` will display as `2 / min`.
+## System architecture
 
-## Quick start
+![System architecture](assets/system-architecture.svg)
 
-1. Create a virtual environment and install:
+The implementation follows a single-edge-node architecture:
 
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e .[dev,serial]
-```
+- camera input is processed locally for detection, tracking, and line-crossing estimation
+- mmWave input provides an additional sensing stream for presence-related logic and system monitoring
+- metrics and events are stored locally in SQLite and published through REST, SSE, and the web dashboard
+- calibration and validation workflows are provided through local routes for configuration and testing
 
-2. Run the current Windows development setup:
+## Hardware and software selection
 
-```powershell
-entrance-monitor --config config/windows-webcam.yaml
-```
+- Edge platform: Raspberry Pi 5
+  Purpose: primary deployment target for on-device analytics.
+- Vision sensor: USB webcam
+  Purpose: entrance monitoring and person detection input.
+- Auxiliary sensor: mmWave module
+  Purpose: additional sensing stream for presence-related logic.
+- Inference runtime: ONNX Runtime
+  Purpose: local model execution on both development and deployment paths.
+- Backend service: FastAPI
+  Purpose: local API, SSE stream, and dashboard backend.
+- Local storage: SQLite
+  Purpose: embedded persistence for snapshots, events, and validation sessions.
 
-3. For the hardware-free mock pipeline instead, run:
+## Team
 
-```powershell
-entrance-monitor --config config/default.yaml
-```
+- Lim Sheng Yang
+- Lim Xin Yi
+- Hing Zheng Wen
+- Lee Ru Yuan
 
-4. Open:
+## Scope and limitations
 
-- Operator dashboard: `http://127.0.0.1:8000/`
-- Local debug view: `http://127.0.0.1:8000/debug`
-- Local settings page: `http://127.0.0.1:8000/settings`
-- Local validation page: `http://127.0.0.1:8000/validation`
+- The present implementation is focused on single-entrance monitoring and calibration workflows.
+- The main dashboard is metrics-focused. `/debug` and `/settings` are local routes intended for annotated frames and calibration controls.
+- The top KPI cards are derived rate estimates calculated from the rolling 30-second counts.
 
-## Export the pretrained YOLO model to ONNX
+## System outputs
 
-The runtime now expects an ONNX model such as `yolo11n.onnx`. The repo still includes `yolo11n.pt`, which is already pretrained. You do not retrain it; you only export it once.
-
-Install the export helper dependencies:
-
-```powershell
-pip install -e .[export]
-```
-
-Then export:
-
-```powershell
-python scripts/export_onnx.py --weights yolo11n.pt --output yolo11n.onnx --imgsz 416
-```
-
-The app runtime does not need `ultralytics`; only this one-time export step does.
-
-## Config files
-
-- `config/default.yaml` is the mock baseline:
-  - mock camera
-  - mock mmWave
-  - mock detector
-- `config/windows-webcam.yaml` is the current Windows development setup:
-  - real webcam
-  - ONNX Runtime YOLO detector
-  - mock mmWave
-- `config/windows-video.sample.yaml` is the tracked sample for recorded video playback.
-- `config/pi.sample.yaml` is the tracked Raspberry Pi sample for real camera, serial mmWave, and ONNX YOLO.
-- `config/windows-video.yaml` and `config/*.local.yaml` are ignored on purpose so machine-specific paths and device settings do not get committed.
-
-You can also tune ROI, line, detector confidence, cooldown, and busyness thresholds from the local-only settings page at `/settings`. Changes are applied immediately and saved back to the active YAML config.
-
-- Set `camera.source` to:
-  - an integer webcam index such as `0`
-  - a file path for recorded video
-  - `"mock"` for synthetic frames
-- Set `mmwave.mode` to:
-  - `"serial"` for a real sensor
-  - `"mock"` for generated presence events
-- Set `detector.backend` to:
-  - `"onnx"` for the current webcam and Pi setup
-  - `"mock"` for the synthetic regression path
-
-## Proposal KPI mapping
-
-The API exposes exact rolling counts:
+The system produces these main outputs:
 
 - `entry_count_30s`
 - `exit_count_30s`
 - `net_count_30s`
 - `crossing_count_30s`
+- `entry_rate_per_min`
+- `exit_rate_per_min`
+- `net_flow_per_min`
+- `busyness_level`
+- recent crossing activity and system status indicators
 
-The dashboard also shows derived proposal-facing KPIs:
+These outputs are presented through the local dashboard and API for monitoring, calibration, and validation.
 
-- `entry_rate_per_min = entry_count_30s * 2`
-- `exit_rate_per_min = exit_count_30s * 2`
-- `net_flow_per_min = net_count_30s * 2`
-- `busyness_level = entrance_load_level`
+## Privacy and edge rationale
 
-This is why the rate cards can look doubled during manual testing:
+- inference is performed locally on the edge device rather than in the cloud
+- only derived, non-identifying metrics are published through the dashboard and API
+- raw video is not intended to be stored or transmitted as part of the normal monitoring workflow
+- the system is designed for continued local operation without depending on cloud inference
 
-- `1 entry in the last 30s -> 2 / min`
-- `3 entries in the last 30s -> 6 / min`
+## Evaluation
 
-When validating the system, compare against the raw `*_count_30s` fields first, then treat the `*_rate_per_min` cards as an estimated pace indicator.
+The project is evaluated using both system performance and counting reliability criteria:
 
-## Research-backed implementation priorities
+- sustained inference FPS and end-to-end responsiveness from capture to dashboard update
+- CPU temperature and runtime stability during continuous operation
+- entry and exit counting accuracy against manual ground truth
+- stress conditions such as grouped crossings, occlusion, lighting variation, and repeated crossings near the line
+- validation workflows supported by the local validation interface and stored session records
 
-The most important next changes, based on current product and technique research, are:
-
-1. Add raw `30s` counts directly beside the KPI rate cards.
-2. Add trend/history charts from `/api/v1/metrics/history`.
-3. Add CSV export and richer result reporting to the validation workflow.
-4. Harden settings persistence with atomic save, rollback, and a settings audit trail.
-5. Benchmark the ONNX Runtime path for `YOLO11n` on the Pi and tune confidence/imgsz if needed.
-6. Replace the lightweight centroid tracker with a stronger tracker.
-7. Keep mmWave advisory only until the real protocol and calibration flow are implemented.
-
-## Validation guidance
-
-Use a calibration-first workflow:
-
-1. Align ROI and line in `/settings` and `/debug`.
-2. Use `/validation` to start a session, record manual entries/exits, and compare against the live system counts.
-3. Run a pilot of `20-30` crossings per direction.
-4. For formal validation, record the raw `30s` counts, recent events, and manual ground truth.
-5. Do not report a single universal accuracy number; report by condition:
-   - normal walking
-   - back-and-forth
-   - loitering near the line
-   - grouped crossings
-   - low light / occlusion
-
-Commercial products such as Axis and VIVOTEK treat validation as a first-class workflow, not just a screenshot exercise.
-
-## Security and privacy posture
-
-- Keep the normal service bound to `127.0.0.1` unless you intentionally set up LAN access.
-- Do not expose `/debug` or `/settings` beyond the local machine.
-- No raw video or audio should be stored or published by the normal dashboard/API.
-- If you later expose the dashboard on a LAN, add authentication before doing so.
-
-## Setup guides
-
-### Windows development
-
-Use `config/windows-webcam.yaml` for the current setup:
-
-- `camera.source: 0`
-- `camera.backend: "dshow"`
-- `detector.backend: "onnx"`
-- `detector.model_path: "yolo11n.onnx"`
-- `mmwave.mode: "mock"`
-
-Run:
-
-```powershell
-entrance-monitor --config config/windows-webcam.yaml
-```
-
-Tracked webcam config:
-
-```yaml
-camera:
-  source: 0
-  backend: "dshow"
-detector:
-  backend: "onnx"
-  model_path: "yolo11n.onnx"
-mmwave:
-  mode: "mock"
-```
-
-Notes:
-
-- Current development webcam: `Logi C270 HD`
-- If your camera index changes, test `0` and `1` first.
-- Export or copy your ONNX model to `yolo11n.onnx`, or update `detector.model_path` to wherever your exported model lives.
-- This is now the primary development path for the project.
-- Raspberry Pi-only telemetry such as `vcgencmd` thermal and undervoltage flags is not available on Windows.
-
-Use `config/default.yaml` when you want the mock regression path:
-
-```powershell
-entrance-monitor --config config/default.yaml
-```
-
-That keeps the full pipeline hardware-free for regression testing.
-
-Use a recorded entrance video:
-
-```powershell
-Copy-Item config/windows-video.sample.yaml config/windows-video.yaml
-entrance-monitor --config config/windows-video.yaml
-```
-
-Then edit `config/windows-video.yaml` and set:
-
-```yaml
-camera:
-  source: "path/to/your/entrance-video.mp4"
-```
-
-Notes:
-
-- `config/windows-video.yaml` is intentionally ignored so you can keep a machine-local video path there.
-- Keep `mmwave.mode: "mock"` unless you have the real sensor connected.
-- This is useful for ROI tuning, line placement, and repeatable offline testing.
+## Deployment guides
 
 ### Raspberry Pi deployment
 
@@ -253,13 +123,6 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e .[dev,serial]
-```
-
-If you need to generate the ONNX model on your development machine first:
-
-```bash
-python -m pip install -e .[export]
-python scripts/export_onnx.py --weights yolo11n.pt --output yolo11n.onnx --imgsz 416
 ```
 
 Check the webcam and serial device:
@@ -292,15 +155,7 @@ detector:
   model_path: "yolo11n.onnx"
 ```
 
-Notes:
-
-- Start from `config/pi.sample.yaml`, not `config/windows-webcam.yaml`.
-- Keep `config/default.yaml` for mock regression testing only.
-- Tune ROI and line coordinates on the Pi after the real camera is mounted.
-- Change `/dev/ttyUSB0` if your mmWave sensor appears under a different device name.
-- The Pi expects an exported ONNX model file. The runtime does not need Ultralytics, but the optional export helper does.
-
-Then run:
+Run:
 
 ```bash
 entrance-monitor --config config/pi.local.yaml
@@ -312,4 +167,63 @@ Verify:
 - mmWave samples arrive and parse correctly
 - CPU, temperature, and FPS are acceptable
 - no raw media is stored
-- the dashboard and API still work during local network interruptions
+- the dashboard and API remain available during local network interruptions
+
+### Windows development
+
+Use `config/windows-webcam.yaml` for the Windows development setup:
+
+- `camera.source: 0`
+- `camera.backend: "dshow"`
+- `detector.backend: "onnx"`
+- `detector.model_path: "yolo11n.onnx"`
+- `mmwave.mode: "mock"`
+
+Run:
+
+```powershell
+entrance-monitor --config config/windows-webcam.yaml
+```
+
+Reference configuration:
+
+```yaml
+camera:
+  source: 0
+  backend: "dshow"
+detector:
+  backend: "onnx"
+  model_path: "yolo11n.onnx"
+mmwave:
+  mode: "mock"
+```
+
+- If your camera index changes, test `0` and `1` first.
+- Ensure that `yolo11n.onnx` is available at the configured model path.
+- Raspberry Pi-only telemetry such as `vcgencmd` thermal and undervoltage flags is not available on Windows.
+
+Use `config/default.yaml` for the mock regression path:
+
+```powershell
+entrance-monitor --config config/default.yaml
+```
+
+This supports end-to-end regression testing without requiring connected hardware.
+
+Use a recorded entrance video:
+
+```powershell
+Copy-Item config/windows-video.sample.yaml config/windows-video.yaml
+entrance-monitor --config config/windows-video.yaml
+```
+
+Then edit `config/windows-video.yaml` and set:
+
+```yaml
+camera:
+  source: "path/to/your/entrance-video.mp4"
+```
+
+- `config/windows-video.yaml` is excluded from version control so that machine-local video paths can be used safely.
+- Keep `mmwave.mode: "mock"` unless a physical sensor is connected.
+- This path is useful for ROI tuning, line placement, and repeatable offline testing.
