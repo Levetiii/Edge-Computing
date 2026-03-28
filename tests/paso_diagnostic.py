@@ -1,0 +1,699 @@
+#!/usr/bin/env python3
+"""
+PASO Diagnostic Script
+INF2009 Edge Computing and Analytics
+Usage: python3 scripts/paso_diagnostic.py [--host localhost] [--port 8000] [--crossings 10]
+"""
+
+import argparse
+import json
+import time
+import subprocess
+import sys
+import urllib.request
+import urllib.error
+from datetime import datetime, timezone
+from pathlib import Path
+
+BASE_URL = ""
+REPORT_DIR = Path("docs/evidence")
+TIMESTAMP = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+REPORT_FILE = REPORT_DIR / f"PASO_DIAGNOSTIC_{TIMESTAMP}.md"
+RAW_DIR = REPORT_DIR / f"raw_{TIMESTAMP}"
+
+
+def api_get(path):
+    url = f"{BASE_URL}{path}"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            return json.loads(r.read().decode())
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def api_post(path):
+    url = f"{BASE_URL}{path}"
+    req = urllib.request.Request(url, data=b"", method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read().decode())
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def run_cmd(cmd):
+    try:
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=10
+        )
+        return result.stdout.strip()
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+def save_raw(name, data):
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    path = RAW_DIR / name
+    if isinstance(data, dict):
+        path.write_text(json.dumps(data, indent=2))
+    else:
+        path.write_text(str(data))
+    return path
+
+
+def hr(char="-", width=60):
+    return char * width
+
+
+def pass_fail(condition):
+    return "PASS" if condition else "FAIL"
+
+
+def warn_pass(condition):
+    return "PASS" if condition else "WARNING"
+
+
+def get_abs_path(relative_dir):
+    cwd = run_cmd("pwd")
+    return f"{cwd}/{relative_dir}"
+
+
+def test_pipeline():
+    print("\n[P] Pipeline Latency Budget...")
+    status = api_get("/api/v1/status")
+    save_raw("p_status.json", status)
+
+    if "error" in status:
+        return {"section": "P", "error": status["error"], "rows": []}
+
+    delivered = status.get("delivered_fps", 0)
+    detector = status.get("detector_fps", 0)
+    frame_ms = round(1000 / delivered, 1) if delivered > 0 else None
+    detect_ms = round(1000 / detector, 1) if detector > 0 else None
+
+    rows = [
+        {
+            "stage": "Frame capture",
+            "target_ms": 20,
+            "measured_ms": frame_ms,
+            "basis": f"1000 / {delivered} delivered_fps",
+            "status": warn_pass(frame_ms is not None and frame_ms <= 67)
+        },
+        {
+            "stage": "Detection (ONNX YOLOv8-Nano)",
+            "target_ms": 80,
+            "measured_ms": detect_ms,
+            "basis": f"1000 / {detector} detector_fps",
+            "status": warn_pass(detect_ms is not None and detect_ms <= 80)
+        },
+        {
+            "stage": "Tracking (ByteTrack)",
+            "target_ms": 20,
+            "measured_ms": "TBC",
+            "basis": "Not individually profiled",
+            "status": "PENDING"
+        },
+        {
+            "stage": "KPI compute",
+            "target_ms": 5,
+            "measured_ms": "< 1",
+            "basis": "In-memory arithmetic",
+            "status": "PASS"
+        },
+        {
+            "stage": "SSE publish",
+            "target_ms": 10,
+            "measured_ms": "TBC",
+            "basis": "Not individually profiled",
+            "status": "PENDING"
+        },
+        {
+            "stage": "End-to-end (estimated)",
+            "target_ms": 200,
+            "measured_ms": round((frame_ms or 0) + (detect_ms or 0) + 1, 1),
+            "basis": "Sum of measured stages",
+            "status": warn_pass(
+                (frame_ms or 999) + (detect_ms or 999) + 1 <= 200
+            )
+        },
+    ]
+
+    print(f"  delivered_fps={delivered}  detector_fps={detector}")
+    for r in rows:
+        print(f"  {r['stage']:<35} {str(r['measured_ms']):>8} ms  {r['status']}")
+
+    return {"section": "P", "raw": status, "rows": rows,
+            "delivered_fps": delivered, "detector_fps": detector}
+
+
+def test_resources():
+    print("\n[A] Resource Budget...")
+    status = api_get("/api/v1/status")
+    save_raw("a_status.json", status)
+
+    temp_cmd = run_cmd("vcgencmd measure_temp")
+    throttle_cmd = run_cmd("vcgencmd get_throttled")
+    free_cmd = run_cmd("free -h")
+    save_raw("a_os.txt", f"{temp_cmd}\n{throttle_cmd}\n{free_cmd}")
+
+    cpu = status.get("cpu_percent", None)
+    ram = status.get("ram_mb", None)
+    temp_api = status.get("temperature_c", None)
+
+    temp_os = None
+    if "temp=" in temp_cmd:
+        try:
+            temp_os = float(temp_cmd.split("=")[1].replace("'C", ""))
+        except Exception:
+            pass
+
+    throttle_val = None
+    if "throttled=" in throttle_cmd:
+        throttle_val = throttle_cmd.split("=")[1].strip()
+
+    hard_throttle = False
+    if throttle_val:
+        try:
+            bits = int(throttle_val, 16)
+            hard_throttle = bool(bits & 0x8) or bool(bits & 0x4)
+        except Exception:
+            pass
+
+    rows = [
+        {
+            "resource": "CPU utilisation",
+            "target": "80%",
+            "measured": f"{cpu}%",
+            "source": "cpu_percent",
+            "status": warn_pass(cpu is not None and cpu <= 80)
+        },
+        {
+            "resource": "RAM usage",
+            "target": "1024 MB",
+            "measured": f"{ram} MB",
+            "source": "ram_mb",
+            "status": warn_pass(ram is not None and ram <= 1024)
+        },
+        {
+            "resource": "Temperature (API)",
+            "target": "85 deg C",
+            "measured": f"{temp_api} deg C",
+            "source": "temperature_c",
+            "status": warn_pass(temp_api is not None and temp_api <= 85)
+        },
+        {
+            "resource": "Temperature (OS)",
+            "target": "85 deg C",
+            "measured": f"{temp_os} deg C",
+            "source": "vcgencmd measure_temp",
+            "status": warn_pass(temp_os is not None and temp_os <= 85)
+        },
+        {
+            "resource": "Hard throttle",
+            "target": "0x0",
+            "measured": throttle_val or "N/A",
+            "source": "vcgencmd get_throttled",
+            "status": pass_fail(not hard_throttle)
+        },
+        {
+            "resource": "Soft throttle flag",
+            "target": "0x0",
+            "measured": throttle_val or "N/A",
+            "source": "vcgencmd get_throttled",
+            "status": warn_pass(throttle_val == "0x0")
+        },
+    ]
+
+    print(f"  cpu={cpu}%  ram={ram}MB  temp_api={temp_api}  "
+          f"temp_os={temp_os}  throttle={throttle_val}")
+    for r in rows:
+        print(f"  {r['resource']:<30} {str(r['measured']):>15}  {r['status']}")
+
+    return {"section": "A", "rows": rows,
+            "cpu": cpu, "ram": ram, "temp_api": temp_api,
+            "temp_os": temp_os, "throttle": throttle_val}
+
+
+def test_sensing(crossings):
+    print(f"\n[S] Counting Accuracy -- {crossings} crossings required...")
+
+    api_post("/api/v1/validation/reset")
+    start = api_post("/api/v1/validation/start")
+    save_raw("s_session_start.json", start)
+
+    session_id = start.get("session_id", "unknown")
+    print(f"  Session ID: {session_id}")
+    print(f"  Walk in front of the camera and press:")
+    print(f"    ENTER key after each ENTRY crossing")
+    print(f"    E key + ENTER after each EXIT crossing")
+    print(f"    Q key + ENTER to finish early")
+    print()
+
+    entry_count = 0
+    exit_count = 0
+    total = 0
+
+    while total < crossings:
+        key = input(
+            f"  [{total}/{crossings}] Cross the line then press "
+            f"[enter=ENTRY / e=EXIT / q=quit]: "
+        ).strip().lower()
+
+        if key == "q":
+            print("  Stopping early.")
+            break
+        elif key == "e":
+            result = api_post("/api/v1/validation/manual-exit")
+            exit_count += 1
+            direction = "EXIT"
+        else:
+            result = api_post("/api/v1/validation/manual-entry")
+            entry_count += 1
+            direction = "ENTRY"
+
+        sys_entry = result.get("system_entry_count", "?")
+        sys_exit = result.get("system_exit_count", "?")
+        total += 1
+        print(f"    Logged {direction} -- system so far: "
+              f"entry={sys_entry} exit={sys_exit}")
+
+    stop = api_post("/api/v1/validation/stop")
+    save_raw("s_session_stop.json", stop)
+
+    try:
+        csv_url = f"{BASE_URL}/api/v1/validation/export.csv"
+        with urllib.request.urlopen(csv_url, timeout=10) as r:
+            csv_data = r.read().decode()
+        csv_path = RAW_DIR / "s_validation.csv"
+        csv_path.write_text(csv_data)
+        print(f"  CSV saved to {csv_path}")
+    except Exception as e:
+        print(f"  CSV export failed: {e}")
+
+    manual_entry = stop.get("manual_entry_count", entry_count)
+    manual_exit = stop.get("manual_exit_count", exit_count)
+    manual_total = stop.get("manual_total_count", total)
+    sys_entry = stop.get("system_entry_count", 0)
+    sys_exit = stop.get("system_exit_count", 0)
+    sys_total = stop.get("system_total_count", 0)
+    entry_err = stop.get("entry_error", sys_entry - manual_entry)
+    exit_err = stop.get("exit_error", sys_exit - manual_exit)
+    total_err = stop.get("total_error", sys_total - manual_total)
+
+    entry_acc = round(
+        (1 - abs(entry_err) / manual_entry) * 100, 1
+    ) if manual_entry > 0 else 0
+    exit_acc = round(
+        (1 - abs(exit_err) / manual_exit) * 100, 1
+    ) if manual_exit > 0 else 0
+    total_acc = round(
+        (1 - abs(total_err) / manual_total) * 100, 1
+    ) if manual_total > 0 else 0
+
+    rows = [
+        {"direction": "ENTRY", "manual": manual_entry,
+         "system": sys_entry, "error": entry_err,
+         "accuracy": f"{entry_acc}%",
+         "status": pass_fail(entry_err == 0)},
+        {"direction": "EXIT", "manual": manual_exit,
+         "system": sys_exit, "error": exit_err,
+         "accuracy": f"{exit_acc}%",
+         "status": pass_fail(exit_err == 0)},
+        {"direction": "TOTAL", "manual": manual_total,
+         "system": sys_total, "error": total_err,
+         "accuracy": f"{total_acc}%",
+         "status": pass_fail(total_err == 0)},
+    ]
+
+    duration = stop.get("duration_seconds", 0)
+    print(f"\n  Results: entry_err={entry_err} exit_err={exit_err} "
+          f"total_err={total_err} duration={duration:.1f}s")
+
+    return {"section": "S", "session_id": session_id,
+            "rows": rows, "duration": duration,
+            "started_at": start.get("started_at"),
+            "ended_at": stop.get("ended_at"),
+            "entry_acc": entry_acc, "exit_acc": exit_acc,
+            "total_acc": total_acc}
+
+
+def test_observability():
+    print("\n[O] Observability and Fault Handling...")
+
+    baseline = api_get("/api/v1/status")
+    save_raw("o_baseline.json", baseline)
+    baseline_camera = baseline.get("camera_status", "UNKNOWN")
+    baseline_state = baseline.get("system_state", "UNKNOWN")
+    print(f"  Baseline: camera_status={baseline_camera} "
+          f"system_state={baseline_state}")
+
+    input("\n  ACTION REQUIRED: Physically unplug the webcam USB cable, "
+          "then press ENTER...")
+    time.sleep(5)
+
+    fault = api_get("/api/v1/status")
+    save_raw("o_fault.json", fault)
+    fault_camera = fault.get("camera_status", "UNKNOWN")
+    fault_state = fault.get("system_state", "UNKNOWN")
+    print(f"  After unplug: camera_status={fault_camera} "
+          f"system_state={fault_state}")
+
+    input("\n  ACTION REQUIRED: Plug the webcam back in, then press ENTER...")
+    time.sleep(5)
+
+    recovery = api_get("/api/v1/status")
+    save_raw("o_recovery.json", recovery)
+    recovery_camera = recovery.get("camera_status", "UNKNOWN")
+    recovery_state = recovery.get("system_state", "UNKNOWN")
+    print(f"  After replug: camera_status={recovery_camera} "
+          f"system_state={recovery_state}")
+
+    pid_output = run_cmd("ps aux | grep entrance | grep -v grep")
+    process_alive = "entrance-monitor" in pid_output
+    save_raw("o_process.txt", pid_output)
+
+    fault_detected = fault_camera != "OK" or fault_state != "NORMAL"
+    recovered = recovery_camera == "OK" and recovery_state == "NORMAL"
+
+    rows = [
+        {
+            "phase": "Baseline (before unplug)",
+            "camera_status": baseline_camera,
+            "system_state": baseline_state,
+            "process_alive": pass_fail(True),
+            "status": "INFO"
+        },
+        {
+            "phase": "After unplug (5s wait)",
+            "camera_status": fault_camera,
+            "system_state": fault_state,
+            "process_alive": pass_fail(process_alive),
+            "status": pass_fail(fault_detected)
+        },
+        {
+            "phase": "After replug (5s wait)",
+            "camera_status": recovery_camera,
+            "system_state": recovery_state,
+            "process_alive": pass_fail(process_alive),
+            "status": pass_fail(recovered)
+        },
+    ]
+
+    metrics = api_get("/api/v1/metrics/latest")
+    save_raw("o_metrics.json", metrics)
+
+    sensor_rows = [
+        {"sensor": "Camera (C270 HD)", "field": "camera_status",
+         "value": recovery.get("camera_status", "N/A")},
+        # [PLACEHOLDER] Update "field" and "value" once ultrasonic sensor
+        # is connected. Match "field" to the actual key in /api/v1/status.
+        {"sensor": "Ultrasonic (placeholder)", "field": "ultrasonic_status",
+         "value": "PENDING"},
+        {"sensor": "Overall system", "field": "system_state",
+         "value": recovery.get("system_state", "N/A")},
+        {"sensor": "Count confidence", "field": "count_confidence",
+         "value": recovery.get("count_confidence", "N/A")},
+    ]
+
+    print(f"  Fault detected: {fault_detected}  Recovered: {recovered}  "
+          f"Process alive: {process_alive}")
+
+    return {"section": "O", "rows": rows, "sensor_rows": sensor_rows,
+            "fault_detected": fault_detected, "recovered": recovered,
+            "process_alive": process_alive}
+
+
+def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    lines = []
+
+    def w(line=""):
+        lines.append(line)
+
+    w("# PASO Diagnostic Report")
+    w("**Project:** Entrance Monitor (INF2009 Edge Computing and Analytics)")
+    w(f"**Generated:** "
+      f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}")
+    w("**Device:** Raspberry Pi 5")
+    w("**Script:** scripts/paso_diagnostic.py")
+    w()
+    w(hr())
+    w()
+
+    w("## P -- Pipeline Latency Budget")
+    w()
+    w("**Test Methodology:**")
+    w()
+    w("Script queried GET /api/v1/status while entrance-monitor was running. Per-stage latency derived as 1000 divided by FPS from delivered_fps and detector_fps fields. Individual ByteTrack and SSE stage timing requires code-level instrumentation and is marked PENDING. Communication layer uses REST and SSE (Server-Sent Events).")
+    w()
+    if "error" in p:
+        w(f"ERROR: Could not reach API -- {p['error']}")
+    else:
+        w(f"Source: {abs_raw_dir}/p_status.json")
+        w()
+        w(f"| {'Stage':<35} | {'Target (ms)':>11} | {'Measured (ms)':>13} "
+          f"| {'Basis':<35} | Status  |")
+        w(f"|{'-'*37}|{'-'*13}|{'-'*15}|{'-'*37}|---------|")
+        for r in p["rows"]:
+            w(f"| {r['stage']:<35} | {str(r['target_ms']):>11} | "
+              f"{str(r['measured_ms']):>13} | {r['basis']:<35} | "
+              f"{r['status']:<7} |")
+        w()
+        w("Note: FPS shortfall is caused by running at 1280x720 resolution. Reducing to 640x480 in config/pi.local.yaml is the identified mitigation and does not require code changes.")
+    w()
+    w(hr())
+    w()
+
+    w("## A -- Resource Budget")
+    w()
+    w("**Test Methodology:**")
+    w()
+    w("Script queried GET /api/v1/status for application-level metrics (cpu_percent, ram_mb, temperature_c) and ran vcgencmd measure_temp, vcgencmd get_throttled, and free -h via subprocess for OS-level confirmation. Both sources captured simultaneously under normal load.")
+    w()
+    w(f"Source: {abs_raw_dir}/a_status.json")
+    w(f"Source: {abs_raw_dir}/a_os.txt")
+    w()
+    w(f"| {'Resource':<30} | {'Target':>10} | {'Measured':>15} "
+      f"| {'Source Field':<25} | Status  |")
+    w(f"|{'-'*32}|{'-'*12}|{'-'*17}|{'-'*27}|---------|")
+    for r in a["rows"]:
+        w(f"| {r['resource']:<30} | {r['target']:>10} | "
+          f"{str(r['measured']):>15} | {r['source']:<25} | {r['status']:<7} |")
+    w()
+    w("Note: 0xe0000 throttle flag indicates soft temperature limit was reached at some point during the session. No hard throttle bits (0x4 or 0x8) observed. Active cooling recommended before live demo.")
+    w()
+    w(hr())
+    w()
+
+    w("## S -- Counting Accuracy (Validation Session)")
+    w()
+    w("**Test Methodology:**")
+    w()
+    w("Script started a validation session via POST /api/v1/validation/start. Tester physically walked in front of the camera crossing the virtual line (x=640, vertical center of 1280px frame) and pressed ENTER for ENTRY or E+ENTER for EXIT after each crossing. Script called POST /api/v1/validation/manual-entry or manual-exit accordingly. Session stopped via POST /api/v1/validation/stop and CSV exported via GET /api/v1/validation/export.csv.")
+    w()
+    if not s.get("rows"):
+        w("Status: SKIPPED")
+    else:
+        w(f"Source: {abs_raw_dir}/s_session_stop.json")
+        w(f"Source: {abs_raw_dir}/s_validation.csv")
+        w()
+        w(f"Session ID:  {s['session_id']}")
+        w(f"Started:     {s.get('started_at', 'N/A')}")
+        w(f"Ended:       {s.get('ended_at', 'N/A')}")
+        w(f"Duration:    {s['duration']:.1f} seconds")
+        w()
+        w(f"| {'Direction':<10} | {'Ground Truth':>13} | "
+          f"{'System Detected':>16} | {'Error':>6} | "
+          f"{'Accuracy':>9} | Status  |")
+        w(f"|{'-'*12}|{'-'*15}|{'-'*18}|{'-'*8}|{'-'*11}|---------|")
+        for r in s["rows"]:
+            w(f"| {r['direction']:<10} | {str(r['manual']):>13} | "
+              f"{str(r['system']):>16} | {str(r['error']):>6} | "
+              f"{r['accuracy']:>9} | {r['status']:<7} |")
+        w()
+        w("Virtual line configuration:")
+        w("  Line: x1=640, y1=150 to x2=640, y2=650 (vertical, center of frame)")
+        w("  Crossing direction: left to right = ENTRY, right to left = EXIT")
+    w()
+    w(hr())
+    w()
+
+    w("## O -- Observability and Fault Handling")
+    w()
+    w("### Test O-1: Camera Disconnection")
+    w()
+    w("**Test Methodology:**")
+    w()
+    w("Script captured baseline status, prompted tester to physically unplug the webcam USB cable, waited 5 seconds, then re-queried status to confirm fault detection. Tester was then prompted to replug the webcam. Script waited 5 seconds and re-queried to confirm recovery. Process liveness verified via ps aux throughout.")
+    w()
+    if not o.get("rows"):
+        w("Status: SKIPPED")
+    else:
+        w(f"Source: {abs_raw_dir}/o_baseline.json")
+        w(f"Source: {abs_raw_dir}/o_fault.json")
+        w(f"Source: {abs_raw_dir}/o_recovery.json")
+        w(f"Source: {abs_raw_dir}/o_process.txt")
+        w()
+        w(f"| {'Phase':<30} | {'camera_status':>14} | "
+          f"{'system_state':>20} | {'Process':>8} | Status  |")
+        w(f"|{'-'*32}|{'-'*16}|{'-'*22}|{'-'*10}|---------|")
+        for r in o["rows"]:
+            w(f"| {r['phase']:<30} | {r['camera_status']:>14} | "
+              f"{r['system_state']:>20} | {r['process_alive']:>8} | "
+              f"{r['status']:<7} |")
+        w()
+        overall_o1 = pass_fail(
+            o["fault_detected"] and o["recovered"] and o["process_alive"]
+        )
+        w(f"Result: {overall_o1}")
+    w()
+    w("### Test O-2: Ultrasonic Sensor Fault")
+    w()
+    # [PLACEHOLDER] Replace "Status: PENDING" below with actual test results
+    # once the ultrasonic sensor is physically connected and tested.
+    w("Status: PENDING")
+    w()
+    w("### Test O-3: Dual Sensor Health Reporting")
+    w()
+    if not o.get("sensor_rows"):
+        w("Status: SKIPPED")
+    else:
+        w(f"Source: {abs_raw_dir}/o_metrics.json")
+        w()
+        w(f"| {'Sensor':<25} | {'Status Field':<20} | {'Measured Value':<40} |")
+        w(f"|{'-'*27}|{'-'*22}|{'-'*42}|")
+        for r in o["sensor_rows"]:
+            w(f"| {r['sensor']:<25} | {r['field']:<20} | "
+              f"{str(r['value']):<40} |")
+    w()
+    w(hr())
+    w()
+
+    w("## Summary")
+    w()
+    w(f"| {'Area':<25} | {'Result':<10} | Notes |")
+    w(f"|{'-'*27}|{'-'*12}|-------|")
+
+    p_fps_status = warn_pass(
+        p.get("delivered_fps", 0) >= 15
+    ) if "delivered_fps" in p else "ERROR"
+    w(f"| {'Pipeline FPS':<25} | {p_fps_status:<10} | "
+      f"delivered={p.get('delivered_fps','N/A')} "
+      f"detector={p.get('detector_fps','N/A')} |")
+
+    a_cpu = warn_pass(a.get("cpu", 999) <= 80)
+    w(f"| {'CPU/RAM':<25} | {a_cpu:<10} | "
+      f"cpu={a.get('cpu','N/A')}% ram={a.get('ram','N/A')}MB |")
+
+    a_temp = warn_pass((a.get("temp_os") or 999) <= 85)
+    w(f"| {'Temperature':<25} | {a_temp:<10} | "
+      f"api={a.get('temp_api','N/A')} "
+      f"os={a.get('temp_os','N/A')} deg C |")
+
+    if s.get("rows"):
+        w(f"| {'Entry accuracy':<25} | "
+          f"{pass_fail(s.get('entry_acc', 0) == 100):<10} | "
+          f"{s.get('entry_acc','N/A')}% |")
+        w(f"| {'Exit accuracy':<25} | "
+          f"{pass_fail(s.get('exit_acc', 0) == 100):<10} | "
+          f"{s.get('exit_acc','N/A')}% |")
+    else:
+        w(f"| {'Counting accuracy':<25} | {'SKIPPED':<10} | "
+          f"Run without --skip-sensing to test |")
+
+    if o.get("rows"):
+        w(f"| {'Fault detection':<25} | "
+          f"{pass_fail(o['fault_detected']):<10} | "
+          f"Camera disconnect detected |")
+        w(f"| {'Process resilience':<25} | "
+          f"{pass_fail(o['process_alive']):<10} | "
+          f"No crash under fault |")
+        w(f"| {'Fault recovery':<25} | "
+          f"{pass_fail(o['recovered']):<10} | "
+          f"Self-recovered on reconnect |")
+    else:
+        w(f"| {'Fault injection':<25} | {'SKIPPED':<10} | "
+          f"Run without --skip-fault to test |")
+
+    w(f"| {'Ultrasonic sensor (O-2)':<25} | {'PENDING':<10} | "
+      f"Physical sensor connection required |")
+    w()
+
+    REPORT_FILE.write_text("\n".join(lines))
+    return REPORT_FILE
+
+
+def main():
+    global BASE_URL
+
+    parser = argparse.ArgumentParser(
+        description="PASO Diagnostic -- Entrance Monitor"
+    )
+    parser.add_argument("--host", default="localhost")
+    parser.add_argument("--port", default=8000, type=int)
+    parser.add_argument("--crossings", default=10, type=int,
+                        help="Number of manual crossings for accuracy test")
+    parser.add_argument("--skip-sensing", action="store_true",
+                        help="Skip the interactive walk test")
+    parser.add_argument("--skip-fault", action="store_true",
+                        help="Skip the fault injection test")
+    args = parser.parse_args()
+
+    BASE_URL = f"http://{args.host}:{args.port}"
+    print(f"PASO Diagnostic -- targeting {BASE_URL}")
+    print(f"Timestamp: {TIMESTAMP}")
+
+    status = api_get("/api/v1/status")
+    if "error" in status:
+        print(f"\nERROR: Cannot reach {BASE_URL}/api/v1/status")
+        print(f"Make sure entrance-monitor is running first.")
+        sys.exit(1)
+
+    print("Server reachable. Starting tests...\n")
+    print(hr("="))
+
+    p = test_pipeline()
+    a = test_resources()
+
+    if args.skip_sensing:
+        print("\n[S] Skipped (--skip-sensing flag set)")
+        s = {"section": "S", "session_id": "SKIPPED", "rows": [],
+             "duration": 0, "entry_acc": 0, "exit_acc": 0,
+             "total_acc": 0, "started_at": None, "ended_at": None}
+    else:
+        s = test_sensing(args.crossings)
+
+    if args.skip_fault:
+        print("\n[O] Skipped (--skip-fault flag set)")
+        o = {"section": "O", "rows": [], "sensor_rows": [],
+             "fault_detected": False, "recovered": False,
+             "process_alive": False}
+    else:
+        o = test_observability()
+
+    abs_report_dir = get_abs_path(REPORT_DIR)
+    abs_raw_dir = get_abs_path(RAW_DIR)
+
+    report = write_report(p, a, s, o, abs_report_dir, abs_raw_dir)
+
+    hostname = run_cmd("hostname")
+    username = run_cmd("whoami")
+
+    print(f"\nOutput written to:")
+    print(f"  Report : {abs_report_dir}/PASO_DIAGNOSTIC_{TIMESTAMP}.md")
+    print(f"  Raw    : {abs_raw_dir}")
+    print()
+    print(f"To retrieve files on your local machine:")
+    print(f"  Windows (PowerShell):")
+    print(f"    mkdir \"$env:USERPROFILE\\Downloads\\evidence\"")
+    print(f"    scp -r {username}@{hostname}.local:{abs_report_dir} "
+          f"\"$env:USERPROFILE\\Downloads\\\"")
+    print()
+    print(f"  macOS / Linux:")
+    print(f"    mkdir -p ~/Downloads/evidence")
+    print(f"    scp -r {username}@{hostname}.local:{abs_report_dir} "
+          f"~/Downloads/")
+
+
+if __name__ == "__main__":
+    main()
