@@ -169,7 +169,8 @@ class EdgeService:
 
     def start(self) -> None:
         self.storage.start()
-        self.camera.start()
+        # Camera starts OFF; mmwave presence wakes it (edge power-gating)
+        self._camera_powered = False
         self.mmwave.start()
         self._running.set()
         self._thread = threading.Thread(target=self._run, name="edge-service", daemon=True)
@@ -179,7 +180,8 @@ class EdgeService:
         self._running.clear()
         if self._thread:
             self._thread.join(timeout=2)
-        self.camera.stop()
+        if self._camera_powered:
+            self.camera.stop()
         self.mmwave.stop()
         self.storage.stop()
 
@@ -393,10 +395,29 @@ class EdgeService:
     def _run(self) -> None:
         while self._running.is_set():
             now = utc_now()
-            self._process_camera(now)
             self._refresh_mmwave_state(now)
+            self._update_camera_power(now)
+            self._process_camera(now)
             self._emit_snapshot_if_due(now)
             time.sleep(0.02)
+
+    def _update_camera_power(self, now: datetime) -> None:
+        """Power camera on when mmwave detects presence; power off when absent."""
+        mmwave_status = self._compute_mmwave_status(now)
+        present = (
+            mmwave_status == MmwaveStatus.OK
+            and self.state.last_mmwave_state == PresenceCorroborationState.PRESENT
+        )
+        if present and not self._camera_powered:
+            self.camera.start()
+            self._camera_powered = True
+        elif not present and self._camera_powered:
+            # Delay power-down until absence is confirmed for low_activity_absent_seconds
+            if self._presence_absent_for(now) >= self.settings.runtime.low_activity_absent_seconds:
+                self.camera.stop()
+                self._camera_powered = False
+                self.state.last_processed_frame_id = 0
+                self.state.last_detector_run_ts = None
 
     def _refresh_mmwave_state(self, now: datetime) -> None:
         sample = self.mmwave.latest()

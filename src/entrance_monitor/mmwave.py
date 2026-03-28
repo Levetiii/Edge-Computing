@@ -15,6 +15,39 @@ try:
 except ImportError:  # pragma: no cover
     serial = None
 
+# ---------------------------------------------------------------------------
+# MR24HPC1 binary protocol constants (standard presence mode)
+# The sensor sends variable-length frames with this structure:
+#   [0x53][0x59] [ctrl] [cmd] [len_hi][len_lo] [data...] [checksum][0x54][0x43]
+# We care about control=0x80, command=0x03 (movement signs report):
+#   data[0] == 0x00 → no one present
+#   data[0] == 0x01 → someone present, stationary
+#   data[0] >= 0x06 → someone present, moving
+#
+# In small/enclosed rooms the sensor picks up background at 0x01-0x06 even
+# when nobody is at the entrance. We use a sliding window majority vote:
+# only declare PRESENT if enough recent samples exceed ACTIVITY_THRESHOLD,
+# and only declare ABSENT if enough recent samples are below it.
+# ---------------------------------------------------------------------------
+_FRAME_HEADER = bytes([0x53, 0x59])
+_FRAME_TAIL = bytes([0x54, 0x43])
+_CTRL_PRESENCE = 0x80
+_CMD_PRESENCE = 0x03
+
+# Samples >= this are counted as "active" votes
+_ACTIVITY_THRESHOLD = 0x08
+
+# Sliding window: keep samples from the last N seconds
+_WINDOW_SECONDS = 5.0
+
+# Fraction of samples in the window that must be "active" to flip to PRESENT
+_PRESENT_VOTE_RATIO = 0.4
+
+# Fraction of samples that must be "inactive" to flip to ABSENT
+_ABSENT_VOTE_RATIO = 0.7
+
+_MAX_FRAME_LEN = 256
+
 
 @dataclass
 class MmwaveStats:
@@ -32,6 +65,9 @@ class MmwaveSource:
         self._latest: MmwaveSample | None = None
         self._errors: deque[tuple[datetime, int, int]] = deque()
         self.stats = MmwaveStats()
+        # Sliding window of (monotonic_time, value) tuples for voting
+        self._vote_window: deque[tuple[float, int]] = deque()
+        self._voted_state: PresenceCorroborationState = PresenceCorroborationState.UNKNOWN
 
     def start(self) -> None:
         self._running.set()
@@ -101,32 +137,91 @@ class MmwaveSource:
         while self._running.is_set():
             try:
                 with serial.Serial(self.config.port, self.config.baudrate, timeout=1) as ser:
+                    # Restore standard presence mode on every connect.
+                    # The MR24HPC1 can drift into raw data mode; this ensures
+                    # ctrl=0x80 cmd=0x03 presence frames are always output.
+                    _restore = bytearray([0x53, 0x59, 0x08, 0x00, 0x00, 0x01, 0x00])
+                    _restore += bytearray([sum(_restore) & 0xFF, 0x54, 0x43])
+                    ser.write(_restore)
+                    time.sleep(1.0)  # give sensor time to switch mode
+                    buf = bytearray()
                     while self._running.is_set():
-                        line = ser.readline().decode("utf-8", errors="ignore").strip()
-                        now = utc_now()
-                        if not line:
+                        chunk = ser.read(64)
+                        if not chunk:
                             continue
-                        state = self._parse_state(line)
-                        valid = state is not None
-                        sample = MmwaveSample(
-                            ts=now,
-                            state=state or PresenceCorroborationState.UNKNOWN,
-                            valid=valid,
-                            raw=line,
-                        )
-                        self.stats.last_sample_ts = now
-                        self._record_result(now, invalid=not valid)
-                        self._set_latest(sample)
+                        buf.extend(chunk)
+                        now = utc_now()
+                        raw_value, buf = self._drain_frames(buf)
+                        if raw_value is not None:
+                            state = self._vote(raw_value)
+                            sample = MmwaveSample(
+                                ts=now,
+                                state=state,
+                                valid=True,
+                                raw=str(raw_value),
+                            )
+                            self.stats.last_sample_ts = now
+                            self._record_result(now, invalid=False)
+                            self._set_latest(sample)
+                        if len(buf) > _MAX_FRAME_LEN * 4:
+                            buf = buf[-_MAX_FRAME_LEN:]
             except Exception:
                 now = utc_now()
                 self._record_result(now, invalid=True)
                 self._set_latest(MmwaveSample(ts=now, state=PresenceCorroborationState.UNKNOWN, valid=False))
                 time.sleep(2.0)
 
-    def _parse_state(self, line: str) -> PresenceCorroborationState | None:
-        normalized = line.upper()
-        if "PRESENT" in normalized or normalized in {"1", "ON", "TRUE"}:
-            return PresenceCorroborationState.PRESENT
-        if "ABSENT" in normalized or normalized in {"0", "OFF", "FALSE"}:
-            return PresenceCorroborationState.ABSENT
-        return None
+    def _vote(self, raw_value: int) -> PresenceCorroborationState:
+        """
+        Sliding window majority vote to smooth noisy sensor output.
+        Prevents false triggers from background activity in small rooms.
+        """
+        now_mono = time.monotonic()
+        self._vote_window.append((now_mono, raw_value))
+        cutoff = now_mono - _WINDOW_SECONDS
+        while self._vote_window and self._vote_window[0][0] < cutoff:
+            self._vote_window.popleft()
+
+        total = len(self._vote_window)
+        if total == 0:
+            return self._voted_state
+
+        active = sum(1 for _, v in self._vote_window if v >= _ACTIVITY_THRESHOLD)
+        active_ratio = active / total
+        inactive_ratio = 1.0 - active_ratio
+
+        if inactive_ratio >= _PRESENT_VOTE_RATIO:
+            self._voted_state = PresenceCorroborationState.PRESENT
+        elif active_ratio >= _ABSENT_VOTE_RATIO:
+            self._voted_state = PresenceCorroborationState.ABSENT
+
+        return self._voted_state
+
+    def _drain_frames(self, buf: bytearray) -> tuple[int | None, bytearray]:
+        last_value: int | None = None
+        while True:
+            idx = buf.find(_FRAME_HEADER)
+            if idx == -1:
+                buf = buf[-1:] if buf else bytearray()
+                break
+            if idx > 0:
+                buf = buf[idx:]
+            if len(buf) < 6:
+                break
+            ctrl = buf[2]
+            cmd = buf[3]
+            data_len = (buf[4] << 8) | buf[5]
+            total = 6 + data_len + 3
+            if total > _MAX_FRAME_LEN:
+                buf = buf[2:]
+                continue
+            if len(buf) < total:
+                break
+            tail_start = 6 + data_len + 1
+            if buf[tail_start: tail_start + 2] != _FRAME_TAIL:
+                buf = buf[2:]
+                continue
+            if ctrl == _CTRL_PRESENCE and cmd == _CMD_PRESENCE and data_len >= 1:
+                last_value = buf[6]
+            buf = buf[total:]
+        return last_value, buf
