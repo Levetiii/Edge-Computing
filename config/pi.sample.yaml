@@ -26,12 +26,12 @@ camera:
   detector_fps_normal: 10.0
   detector_fps_gated: 3.0
   crossing_cooldown_seconds: 1.5
-  line_hysteresis_px: 24
+  line_hysteresis_px: 80
   min_detection_width_px: 28
   min_detection_height_px: 56
   detection_edge_margin_px: 12
-  min_track_hits_for_crossing: 3
-  crossing_confirm_frames: 2
+  min_track_hits_for_crossing: 2
+  crossing_confirm_frames: 1
   active_track_promote_threshold: 3
   active_track_promote_seconds: 5
 
