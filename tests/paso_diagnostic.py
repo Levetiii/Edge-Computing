@@ -15,11 +15,14 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml
+
 BASE_URL = ""
 REPORT_DIR = Path("docs/evidence")
 TIMESTAMP = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 REPORT_FILE = REPORT_DIR / f"PASO_DIAGNOSTIC_{TIMESTAMP}.md"
 RAW_DIR = REPORT_DIR / f"raw_{TIMESTAMP}"
+WRITE_RAW = True
 
 
 def api_get(path):
@@ -52,6 +55,8 @@ def run_cmd(cmd):
 
 
 def save_raw(name, data):
+    if not WRITE_RAW:
+        return None
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     path = RAW_DIR / name
     if isinstance(data, (dict, list)):
@@ -180,6 +185,24 @@ def summarize_status_samples(samples):
         )
 
     return summary
+
+
+def load_mmwave_mode(settings_payload):
+    config_path = settings_payload.get("config_path") if isinstance(settings_payload, dict) else None
+    if not config_path:
+        return None
+    path = Path(config_path)
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+    if not path.exists():
+        return None
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    mmwave = data.get("mmwave") or {}
+    mode = mmwave.get("mode")
+    return str(mode) if mode is not None else None
 
 
 def test_pipeline():
@@ -362,7 +385,10 @@ def test_pipeline():
             "target_detector_fps": target_detector_fps,
             "drop_ratio_30s": drop_ratio_30s,
             "publish_backlog_ms": publish_backlog_ms,
-            "sampling": sampling}
+            "sampling": sampling,
+            "camera_status": status.get("camera_status"),
+            "system_state": status.get("system_state"),
+            "warning_flags": status.get("warning_flags", [])}
 
 
 def test_resources():
@@ -553,6 +579,10 @@ def test_sensing(crossings):
 def test_observability():
     print("\n[O] Observability and Fault Handling...")
 
+    settings = api_get("/api/v1/settings")
+    save_raw("o_settings.json", settings)
+    mmwave_mode = load_mmwave_mode(settings)
+
     baseline = api_get("/api/v1/status")
     save_raw("o_baseline.json", baseline)
     baseline_camera = baseline.get("camera_status", "UNKNOWN")
@@ -623,7 +653,10 @@ def test_observability():
     mmwave_recovered = None
     mmwave_note = ""
 
-    if mmwave_baseline_status != "OK":
+    if mmwave_mode == "mock":
+        mmwave_note = "Skipped: mmWave mode is mock, so a physical unplug test is not applicable."
+        print(f"  mmWave fault test skipped: {mmwave_note}")
+    elif mmwave_baseline_status != "OK":
         mmwave_note = (
             f"Skipped: baseline mmwave_status={mmwave_baseline_status}. "
             "Connect the physical mmWave sensor and rerun to test fault handling."
@@ -709,10 +742,11 @@ def test_observability():
             "process_alive": process_alive,
             "mmwave_fault_detected": mmwave_fault_detected,
             "mmwave_recovered": mmwave_recovered,
-            "mmwave_note": mmwave_note}
+            "mmwave_note": mmwave_note,
+            "mmwave_mode": mmwave_mode}
 
 
-def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
+def write_report(p, a, s, o, abs_report_dir, abs_raw_dir, raw_enabled):
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     lines = []
 
@@ -738,10 +772,13 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
     if "error" in p:
         w(f"ERROR: Could not reach API -- {p['error']}")
     else:
-        w(f"Source: {abs_raw_dir}/p_status.json")
-        w(f"Source: {abs_raw_dir}/p_status_samples.json")
-        if p.get("target_capture_fps") is not None or p.get("target_detector_fps") is not None:
-            w(f"Source: {abs_raw_dir}/p_settings.json")
+        if raw_enabled:
+            w(f"Source: {abs_raw_dir}/p_status.json")
+            w(f"Source: {abs_raw_dir}/p_status_samples.json")
+            if p.get("target_capture_fps") is not None or p.get("target_detector_fps") is not None:
+                w(f"Source: {abs_raw_dir}/p_settings.json")
+        else:
+            w("Raw artifact export disabled (--report-only).")
         w()
         w(f"| {'Stage':<35} | {'Target (ms)':>11} | {'Measured (ms)':>13} "
           f"| {'Basis':<35} | Status  |")
@@ -774,8 +811,11 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
     w()
     w("Script queried GET /api/v1/status for application-level metrics (cpu_percent, ram_mb, temperature_c) and ran vcgencmd measure_temp, vcgencmd get_throttled, and free -h via subprocess for OS-level confirmation. Both sources captured simultaneously under normal load.")
     w()
-    w(f"Source: {abs_raw_dir}/a_status.json")
-    w(f"Source: {abs_raw_dir}/a_os.txt")
+    if raw_enabled:
+        w(f"Source: {abs_raw_dir}/a_status.json")
+        w(f"Source: {abs_raw_dir}/a_os.txt")
+    else:
+        w("Raw artifact export disabled (--report-only).")
     w()
     w(f"| {'Resource':<30} | {'Target':>10} | {'Measured':>15} "
       f"| {'Source Field':<25} | Status  |")
@@ -798,8 +838,11 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
     if not s.get("rows"):
         w("Status: SKIPPED")
     else:
-        w(f"Source: {abs_raw_dir}/s_session_stop.json")
-        w(f"Source: {abs_raw_dir}/s_validation.csv")
+        if raw_enabled:
+            w(f"Source: {abs_raw_dir}/s_session_stop.json")
+            w(f"Source: {abs_raw_dir}/s_validation.csv")
+        else:
+            w("Raw artifact export disabled (--report-only).")
         w()
         w(f"Session ID:  {s['session_id']}")
         w(f"Started:     {s.get('started_at', 'N/A')}")
@@ -833,10 +876,13 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
     if not o.get("rows"):
         w("Status: SKIPPED")
     else:
-        w(f"Source: {abs_raw_dir}/o_baseline.json")
-        w(f"Source: {abs_raw_dir}/o_fault.json")
-        w(f"Source: {abs_raw_dir}/o_recovery.json")
-        w(f"Source: {abs_raw_dir}/o_process.txt")
+        if raw_enabled:
+            w(f"Source: {abs_raw_dir}/o_baseline.json")
+            w(f"Source: {abs_raw_dir}/o_fault.json")
+            w(f"Source: {abs_raw_dir}/o_recovery.json")
+            w(f"Source: {abs_raw_dir}/o_process.txt")
+        else:
+            w("Raw artifact export disabled (--report-only).")
         w()
         w(f"| {'Phase':<30} | {'camera_status':>14} | "
           f"{'system_state':>20} | {'Process':>8} | Status  |")
@@ -858,10 +904,13 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
     w("If the baseline mmwave_status is OK, script prompts the tester to unplug the mmWave sensor, waits 5 seconds, re-queries status, then prompts for replug and checks recovery after another 5 seconds. Process liveness is verified after the fault sequence.")
     w()
     if o.get("mmwave_rows"):
-        w(f"Source: {abs_raw_dir}/o_mmwave_baseline.json")
-        w(f"Source: {abs_raw_dir}/o_mmwave_fault.json")
-        w(f"Source: {abs_raw_dir}/o_mmwave_recovery.json")
-        w(f"Source: {abs_raw_dir}/o_mmwave_process.txt")
+        if raw_enabled:
+            w(f"Source: {abs_raw_dir}/o_mmwave_baseline.json")
+            w(f"Source: {abs_raw_dir}/o_mmwave_fault.json")
+            w(f"Source: {abs_raw_dir}/o_mmwave_recovery.json")
+            w(f"Source: {abs_raw_dir}/o_mmwave_process.txt")
+        else:
+            w("Raw artifact export disabled (--report-only).")
         w()
         w(f"| {'Phase':<30} | {'mmwave_status':>14} | {'system_state':>20} | {'Process':>8} | Status  |")
         w(f"|{'-'*32}|{'-'*16}|{'-'*22}|{'-'*10}|---------|")
@@ -883,8 +932,11 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
     if not o.get("sensor_rows"):
         w("Status: SKIPPED")
     else:
-        w(f"Source: {abs_raw_dir}/o_metrics.json")
-        w(f"Source: {abs_raw_dir}/o_status_final.json")
+        if raw_enabled:
+            w(f"Source: {abs_raw_dir}/o_metrics.json")
+            w(f"Source: {abs_raw_dir}/o_status_final.json")
+        else:
+            w("Raw artifact export disabled (--report-only).")
         w()
         w(f"| {'Sensor':<25} | {'Status Field':<20} | {'Measured Value':<40} |")
         w(f"|{'-'*27}|{'-'*22}|{'-'*42}|")
@@ -900,17 +952,34 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
     w(f"| {'Area':<25} | {'Result':<10} | Notes |")
     w(f"|{'-'*27}|{'-'*12}|-------|")
 
-    p_fps_status = warn_pass(
-        p.get("target_capture_fps") is not None
-        and p.get("delivered_fps", 0) >= (p.get("target_capture_fps", 0) * 0.8)
-    ) if "delivered_fps" in p else "ERROR"
+    p_fps_status = "ERROR"
+    if "delivered_fps" in p:
+        target_capture = p.get("target_capture_fps", 0) or 0
+        target_detector = p.get("target_detector_fps", 0) or 0
+        delivered_ok = target_capture <= 0 or p.get("delivered_fps", 0) >= target_capture * 0.8
+        detector_ok = target_detector <= 0 or p.get("detector_fps", 0) >= target_detector * 0.8
+        camera_status = p.get("camera_status")
+        warning_flags = set(p.get("warning_flags", []))
+        if camera_status == "DISCONNECTED":
+            p_fps_status = "FAIL"
+        elif (
+            camera_status != "OK"
+            or "high_drop_rate" in warning_flags
+            or not delivered_ok
+            or not detector_ok
+        ):
+            p_fps_status = "WARNING"
+        else:
+            p_fps_status = "PASS"
     w(f"| {'Pipeline FPS':<25} | {p_fps_status:<10} | "
       f"delivered={p.get('delivered_fps','N/A')} "
       f"detector={p.get('detector_fps','N/A')} "
       f"target={p.get('target_capture_fps','N/A')} |")
 
-    a_cpu = warn_pass(a.get("cpu", 999) <= 80)
-    w(f"| {'CPU/RAM':<25} | {a_cpu:<10} | "
+    a_cpu_ok = a.get("cpu", 999) <= 80
+    a_ram_ok = a.get("ram", 999999) <= 1024
+    a_cpu_ram = "PASS" if (a_cpu_ok and a_ram_ok) else "WARNING"
+    w(f"| {'CPU/RAM':<25} | {a_cpu_ram:<10} | "
       f"cpu={a.get('cpu','N/A')}% ram={a.get('ram','N/A')}MB |")
 
     a_temp = warn_pass((a.get("temp_os") or 999) <= 85)
@@ -957,7 +1026,7 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
 
 
 def main():
-    global BASE_URL
+    global BASE_URL, WRITE_RAW
 
     parser = argparse.ArgumentParser(
         description="PASO Diagnostic -- Entrance Monitor"
@@ -970,9 +1039,12 @@ def main():
                         help="Skip the interactive walk test")
     parser.add_argument("--skip-fault", action="store_true",
                         help="Skip the fault injection test")
+    parser.add_argument("--report-only", action="store_true",
+                        help="Write only the Markdown report and skip raw JSON/TXT/CSV artifacts")
     args = parser.parse_args()
 
     BASE_URL = f"http://{args.host}:{args.port}"
+    WRITE_RAW = not args.report_only
     print(f"PASO Diagnostic -- targeting {BASE_URL}")
     print(f"Timestamp: {TIMESTAMP}")
 
@@ -1005,16 +1077,19 @@ def main():
         o = test_observability()
 
     abs_report_dir = get_abs_path(REPORT_DIR)
-    abs_raw_dir = get_abs_path(RAW_DIR)
+    abs_raw_dir = get_abs_path(RAW_DIR) if WRITE_RAW else None
 
-    write_report(p, a, s, o, abs_report_dir, abs_raw_dir)
+    write_report(p, a, s, o, abs_report_dir, abs_raw_dir, WRITE_RAW)
 
     hostname = run_cmd("hostname")
     username = run_cmd("whoami")
 
     print(f"\nOutput written to:")
     print(f"  Report : {abs_report_dir}/PASO_DIAGNOSTIC_{TIMESTAMP}.md")
-    print(f"  Raw    : {abs_raw_dir}")
+    if WRITE_RAW:
+        print(f"  Raw    : {abs_raw_dir}")
+    else:
+        print(f"  Raw    : skipped (--report-only)")
     print()
     print(f"To retrieve files on your local machine:")
     print(f"  Windows (PowerShell):")
