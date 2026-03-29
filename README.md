@@ -1,8 +1,8 @@
 # Entrance Monitor
 
-Entrance Monitor is an edge analytics project for the `INF2009: Edge Computing & Analytics` module. It is designed to monitor entrance activity in real time using on-device processing on a Raspberry Pi 5 class deployment target.
+Entrance Monitor is an edge analytics project for the `INF2009: Edge Computing & Analytics` module. It is designed to monitor entrance activity in real time using on-device processing on a Raspberry Pi 5 deployment target.
 
-The system combines camera-based person detection and tracking with mmWave sensing to estimate entrance flow, busyness, and recent crossing activity. Results are exposed through a local dashboard, API, and validation workflow for calibration and demonstration. The reference development webcam is `Logi C270 HD` over USB/UVC. The reference mmWave sensor is the `MR24HPC1` connected via GPIO UART.
+The system combines camera-based person detection and tracking with mmWave sensing to estimate entrance flow, busyness, and recent crossing activity. Results are exposed through a local dashboard, API, and validation workflow for calibration and evaluation. The validated hardware configuration uses a `Logi C270 HD` webcam over USB/UVC and an `MR24HPC1` mmWave sensor connected through GPIO UART.
 
 ## Core features
 
@@ -12,7 +12,7 @@ The system combines camera-based person detection and tracking with mmWave sensi
   - centroid tracking and virtual line crossing
 - mmWave integration:
   - serial mode for MR24HPC1 sensor input via GPIO UART
-  - sliding window majority vote for noise-robust presence detection
+  - sliding window vote-based smoothing for noisy presence readings
   - mock mode for hardware-independent testing
 - Edge service and dashboard:
   - rolling metrics and recent events
@@ -23,18 +23,18 @@ The system combines camera-based person detection and tracking with mmWave sensi
 
 ## Repository layout
 
-- `config/` — sample and environment-specific configuration files
-- `scripts/` — helper scripts for model and project utilities
-- `src/entrance_monitor/` — runtime, API, storage, and web application code
-- `tests/` — automated test suite
-- `yolo11n.onnx` — bundled ONNX model for person detection
+- `config/` - sample and environment-specific configuration files
+- `scripts/` - helper scripts for model and project utilities
+- `src/entrance_monitor/` - runtime, API, storage, and web application code
+- `tests/` - automated test suite
+- `yolo11n.onnx` - bundled ONNX model for person detection
 
 ## System architecture
 
 ![System architecture](assets/system-architecture.svg)
 
 - camera input is processed locally for detection, tracking, and line-crossing estimation
-- mmWave input gates camera power and corroborates presence events
+- mmWave input corroborates presence events and supports sensor-assisted runtime control
 - metrics and events are stored locally in SQLite and published through REST, SSE, and the web dashboard
 - calibration and validation workflows are provided through local routes for configuration and testing
 
@@ -56,7 +56,113 @@ The system combines camera-based person detection and tracking with mmWave sensi
 
 ---
 
-## Raspberry Pi 5 — Quick Start
+## Measured Raspberry Pi 5 Results
+
+The evidence set in `evidence/` shows that the Raspberry Pi 5 deployment is stable enough for live entrance monitoring in the tested Pi configuration, with a configured `10 FPS` camera cadence and CPU-only ONNX inference.
+
+### PASO diagnostic
+
+Primary PASO file:
+- `evidence/PASO_DIAGNOSTIC_20260329T051145Z.md`
+
+Key PASO results from the submission run:
+- capture FPS: `10.56`
+- detector FPS: `8.0`
+- detector total latency: `74.75 ms`
+- per-frame processing total: `75.49 ms`
+- publish backlog: `0.0 ms`
+- healthy samples used: `9/9`
+- measured resources during the PASO sample window:
+  - CPU: `51.7%`
+  - RAM: `1204.375 MB`
+  - API temperature: `82.6 C`
+  - OS temperature: `83.4 C`
+- validation result from the same PASO evidence set:
+  - entry accuracy: `100.0%`
+  - exit accuracy: `100.0%`
+  - total accuracy: `100.0%`
+- fault-handling result from the same PASO evidence set:
+  - camera unplug/replug: `PASS`
+  - mmWave unplug/replug: `PASS`
+
+### 30-second benchmark
+
+Supporting benchmark files:
+- `evidence/summary.md`
+- `evidence/summary.json`
+- `evidence/samples.csv`
+- `evidence/samples.jsonl`
+
+Key benchmark results:
+- delivered FPS average: `10.4`
+- detector FPS average: `8.2`
+- drop ratio average: `0.04`
+- detector inference average: `59.77 ms`
+- detector total average: `64.03 ms`
+- per-frame processing total average: `64.77 ms`
+- CPU average: `54.81%`
+- RAM average: `1347.49 MB`
+- temperature average: `82.86 C`
+
+These benchmark results align with the PASO run and support the same conclusion: capture throughput is stable at roughly `10 FPS`, detector throughput is stable at roughly `8 FPS`, and publish overhead is negligible.
+
+### Profiling evidence
+
+The runtime measurements are supported by Linux and Python profiling captures stored in `evidence/`.
+
+`perf stat` result:
+- `154,041,310,630` cycles
+- `273,896,454,444` instructions
+- `1.78` instructions per cycle
+- `1.50%` cache-miss rate
+- `0.11%` branch-miss rate
+
+Interpretation:
+- the process is executing efficiently on the Pi CPU
+- there is no obvious sign of pathological cache or branch behavior
+
+`perf report` result:
+- most sampled CPU time is inside `onnxruntime_pybind11_state`
+
+Interpretation:
+- the dominant hotspot is native ONNX Runtime inference
+- the main bottleneck is not the tracker, REST/SSE layer, or storage path
+
+`cProfile` result:
+- the main Python-heavy work is startup/import cost
+- the hottest Python-side paths are FastAPI, Pydantic, and module loading
+
+Interpretation:
+- this capture is dominated by startup and import-time Python work rather than live inference
+- there is no strong case for `line_profiler` as the next optimization step from this profile alone
+
+### Evidence screenshots
+
+**perf stat**
+
+![perf stat evidence](evidence/image_2026-03-29_11-51-28.png)
+
+**perf report**
+
+![perf report evidence](evidence/image_2026-03-29_11-51-28%20(2).png)
+
+**cProfile**
+
+![cProfile evidence](evidence/image_2026-03-29_11-51-28%20(3).png)
+
+### Deployment conclusions
+
+Based on the submission evidence set:
+- the camera path is stable at approximately `10 FPS`
+- the detector sustains approximately `8 FPS` on the Pi 5 in the tested configuration
+- the main hotspot is ONNX inference, not the tracker or HTTP layer
+- resource usage is within a practical Pi 5 budget for CPU, RAM, and temperature during the measured windows, with historical throttle flags noted in PASO
+- camera and mmWave disconnect recovery both work in the tested setup
+- the system is suitable as a practical Pi 5 deployment for the project
+
+---
+
+## Raspberry Pi 5 Deployment
 
 ### 1. System packages
 
@@ -71,9 +177,9 @@ The MR24HPC1 connects to the Pi 5 GPIO UART pins (TX=pin8, RX=pin10).
 
 ```bash
 sudo raspi-config
-# Interface Options → Serial Port
-# → No to login shell over serial
-# → Yes to serial port hardware enabled
+# Interface Options -> Serial Port
+# -> No to login shell over serial
+# -> Yes to serial port hardware enabled
 sudo reboot
 ```
 
@@ -86,7 +192,7 @@ ls -la /dev/ttyAMA0
 ### 3. Clone and install
 
 ```bash
-git clone <your-repo-url> edge
+git clone <repository-url> edge
 cd edge
 python3 -m venv .venv
 source .venv/bin/activate
@@ -111,11 +217,11 @@ cp config/pi.yaml config/pi.local.yaml
 ```
 
 `config/pi.yaml` is pre-configured for the Pi 5 with:
-- Camera on `/dev/video0` via v4l2 at 1280×720 10fps
-- mmWave on `/dev/ttyAMA0` at 115200 baud in serial mode
+- camera on `/dev/video0` via `v4l2` at `1280x720` and `10 FPS`
+- mmWave on `/dev/ttyAMA0` at `115200` baud in serial mode
 - YOLO11n ONNX model
 
-Edit `config/pi.local.yaml` only if your hardware differs (different camera index, serial port, etc.).
+Edit `config/pi.local.yaml` only if your hardware differs.
 
 ### 6. Run
 
@@ -126,9 +232,9 @@ entrance-monitor --config config/pi.local.yaml
 
 Dashboard available at `http://<pi-ip>:8000` from any device on the same network.
 
-### 7. Run headless (no monitor needed)
+### 7. Run headless
 
-Use tmux to keep the app running after SSH disconnect:
+Use `tmux` to keep the app running after SSH disconnect:
 
 ```bash
 tmux new -s monitor
@@ -153,9 +259,9 @@ entrance-monitor --config config/pi.local.yaml
 
 ## mmWave notes
 
-The MR24HPC1 uses a sliding window majority vote to determine presence — individual frame values are noisy, especially in small or enclosed spaces. The sensor gates camera power: camera turns on when presence is detected, off when absent, reducing unnecessary inference load.
+The MR24HPC1 path uses a sliding window voting heuristic to smooth noisy presence readings. Individual frame values can be noisy, especially in small or enclosed spaces.
 
-**If the sensor stops producing data or outputs unexpected values**, restore standard presence mode:
+If the sensor stops producing data or outputs unexpected values, restore standard presence mode:
 
 ```bash
 python3 - << 'EOF'
@@ -169,9 +275,9 @@ print("Done:", ser.read(64).hex())
 EOF
 ```
 
-Then power cycle the sensor (unplug and replug).
+Then power cycle the sensor.
 
-**To run without a physical mmWave sensor**, use mock mode in your config:
+To run without a physical mmWave sensor, use mock mode in your config:
 
 ```yaml
 mmwave:
@@ -234,14 +340,14 @@ entrance-monitor --config config/windows-video.yaml
 
 ## Privacy and edge rationale
 
-- all inference runs locally on the Pi, no cloud dependency
-- only derived non-identifying metrics leave the device
-- raw video is never stored or transmitted
+- all inference runs locally on the Pi, with no cloud dependency
+- only derived non-identifying metrics are intended for normal downstream use
+- raw video is not persisted by the default storage pipeline
 - the system continues operating during network outages
 
 ## Scope and limitations
 
 - single-entrance monitoring only
 - counting accuracy degrades with heavy occlusion or simultaneous side-by-side crossings
-- mmWave presence detection sensitivity depends on room size and sensor placement — works best when sensor is co-located with the camera, pointed directly at the entrance zone
-- `/debug` and `/settings` are local-only routes for calibration, not intended for production exposure
+- mmWave presence detection sensitivity depends on room size and sensor placement and works best when the sensor is co-located with the camera, pointed directly at the entrance zone
+- `/debug`, `/settings`, and `/validation` are calibration-oriented routes and should only be exposed on trusted networks; local-only enforcement depends on `app.local_debug_only`
