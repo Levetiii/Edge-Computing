@@ -23,11 +23,72 @@ The system combines camera-based person detection and tracking with mmWave sensi
 
 ## Repository layout
 
-- `config/` - sample and environment-specific configuration files
-- `scripts/` - helper scripts for model and project utilities
-- `src/entrance_monitor/` - runtime, API, storage, and web application code
-- `tests/` - automated test suite
-- `yolo11n.onnx` - bundled ONNX model for person detection
+```text
+/edge
+├── README.md                         # Project overview, deployment guide, and measured Pi 5 results
+├── pyproject.toml                    # Python package metadata, dependencies, and optional extras
+├── yolo11n.onnx                      # Deployed ONNX model used by the detector runtime
+│
+├── /assets
+│   └── system-architecture.svg       # System architecture diagram used in this README
+│
+├── /config
+│   ├── default.yaml                  # Fully mocked configuration for regression testing
+│   ├── pi.yaml                       # Main Raspberry Pi deployment configuration
+│   ├── pi.sample.yaml                # Pi test configuration used during mock mmWave workflows
+│   ├── windows-webcam.yaml           # Windows development configuration with webcam input
+│   └── windows-video.sample.yaml     # Sample configuration for recorded video input
+│
+├── /evidence
+│   ├── PASO_DIAGNOSTIC_20260329T051145Z.md   # Primary PASO diagnostic report
+│   ├── summary.md                    # 30-second benchmark summary
+│   ├── summary.json                  # Machine-readable benchmark summary
+│   ├── samples.csv                   # Benchmark status samples in CSV format
+│   ├── samples.jsonl                 # Benchmark status samples in JSONL format
+│   ├── image_2026-03-29_11-51-28.png         # perf stat screenshot
+│   ├── image_2026-03-29_11-51-28 (2).png     # perf report screenshot
+│   └── image_2026-03-29_11-51-28 (3).png     # cProfile screenshot
+│
+├── /scripts
+│   ├── export_onnx.py                # Exports the PyTorch model to ONNX
+│   ├── paso_benchmark.py             # Samples runtime status and writes benchmark artifacts
+│   ├── compare_benchmarks.py         # Compares multiple benchmark summaries
+│   └── quantize_onnx.py              # Optional offline INT8 ONNX quantization utility
+│
+├── /src
+│   └── /entrance_monitor
+│       ├── __init__.py               # Package marker
+│       ├── main.py                   # Application entry point
+│       ├── api.py                    # FastAPI routes, dashboard pages, and SSE endpoints
+│       ├── camera.py                 # Camera capture, ROI handling, and reconnect logic
+│       ├── config.py                 # Settings models and config loading helpers
+│       ├── detector.py               # ONNX preprocessing, inference, and decode logic
+│       ├── mmwave.py                 # MR24HPC1 serial/mock sensor handling
+│       ├── models.py                 # Shared payload and schema definitions
+│       ├── service.py                # Core runtime orchestration and status generation
+│       ├── storage.py                # SQLite persistence and async writing
+│       ├── tracking.py               # Centroid tracking and line-crossing logic
+│       ├── utils.py                  # Shared utility helpers
+│       └── /web
+│           ├── /static
+│           │   ├── app.css           # Dashboard styling
+│           │   └── app.js            # Dashboard client-side logic
+│           └── /templates
+│               ├── index.html        # Main dashboard page
+│               ├── debug.html        # Debug visualisation page
+│               ├── settings.html     # Settings and calibration page
+│               └── validation.html   # Manual validation page
+│
+└── /tests
+    ├── paso_diagnostic.py            # PASO runner for pipeline, resources, and fault handling
+    ├── test_api.py                   # API route and payload tests
+    ├── test_camera_video.py          # Video-input camera tests
+    ├── test_detector.py              # Detector backend tests
+    ├── test_paso_benchmark.py        # Benchmark sampling and deduplication tests
+    ├── test_service_logic.py         # Runtime service logic tests
+    ├── test_storage.py               # SQLite storage tests
+    └── test_tracking.py              # Tracker and line-crossing tests
+```
 
 ## System architecture
 
@@ -232,6 +293,21 @@ entrance-monitor --config config/pi.local.yaml
 
 Dashboard available at `http://<pi-ip>:8000` from any device on the same network.
 
+To view the dashboard from a Windows machine on the same network:
+
+```powershell
+# Find the Pi IP on Raspberry Pi
+hostname -I
+```
+
+Then open a browser on Windows and visit:
+
+```text
+http://<pi-ip>:8000
+```
+
+If `app.local_debug_only` is enabled, only the main dashboard is intended for remote viewing. Calibration-oriented routes such as `/debug`, `/settings`, and `/validation` should be accessed locally on the Pi or only on trusted networks.
+
 ### 7. Run headless
 
 Use `tmux` to keep the app running after SSH disconnect:
@@ -348,6 +424,6 @@ entrance-monitor --config config/windows-video.yaml
 ## Scope and limitations
 
 - single-entrance monitoring only
-- counting accuracy degrades with heavy occlusion or simultaneous side-by-side crossings
+- counting accuracy may degrade under heavy occlusion or simultaneous side-by-side crossings
 - mmWave presence detection sensitivity depends on room size and sensor placement and works best when the sensor is co-located with the camera, pointed directly at the entrance zone
 - `/debug`, `/settings`, and `/validation` are calibration-oriented routes and should only be exposed on trusted networks; local-only enforcement depends on `app.local_debug_only`
