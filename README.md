@@ -70,7 +70,7 @@ Key PASO results from the submission run:
 - detector FPS: `8.0`
 - detector total latency: `74.75 ms`
 - per-frame processing total: `75.49 ms`
-- publish backlog: `0.0 ms`
+- no observable publish backlog during the PASO run
 - healthy samples used: `9/9`
 - measured resources during the PASO sample window:
   - CPU: `51.7%`
@@ -78,9 +78,9 @@ Key PASO results from the submission run:
   - API temperature: `82.6 C`
   - OS temperature: `83.4 C`
 - validation result from the same PASO evidence set:
-  - entry accuracy: `100.0%`
-  - exit accuracy: `100.0%`
-  - total accuracy: `100.0%`
+  - in the recorded validation session, entry counts matched ground truth
+  - in the recorded validation session, exit counts matched ground truth
+  - in the recorded validation session, total counts matched ground truth
 - fault-handling result from the same PASO evidence set:
   - camera unplug/replug: `PASS`
   - mmWave unplug/replug: `PASS`
