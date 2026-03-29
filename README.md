@@ -47,7 +47,7 @@ The implementation combines camera-based person detection and line-crossing anal
 
 ## System architecture
 
-![System architecture](assets/system-architecture.svg)
+![System architecture](assets/system-architecture.png)
 
 - camera input is processed locally for detection, tracking, and line-crossing estimation
 - mmWave input corroborates presence events and supports sensor-assisted runtime control
