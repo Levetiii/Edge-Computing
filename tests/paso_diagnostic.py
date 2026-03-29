@@ -78,6 +78,50 @@ def warn_pass(condition):
     return "PASS" if condition else "WARNING"
 
 
+def decode_throttle_flags(throttle_val):
+    if not throttle_val:
+        return None
+    try:
+        bits = int(throttle_val, 16)
+    except Exception:
+        return None
+
+    flags = {
+        "current_under_voltage": bool(bits & 0x1),
+        "current_freq_capped": bool(bits & 0x2),
+        "current_throttled": bool(bits & 0x4),
+        "current_soft_temp_limit": bool(bits & 0x8),
+        "past_under_voltage": bool(bits & 0x10000),
+        "past_freq_capped": bool(bits & 0x20000),
+        "past_throttled": bool(bits & 0x40000),
+        "past_soft_temp_limit": bool(bits & 0x80000),
+    }
+
+    current_labels = []
+    if flags["current_under_voltage"]:
+        current_labels.append("under-voltage now")
+    if flags["current_freq_capped"]:
+        current_labels.append("frequency capped now")
+    if flags["current_throttled"]:
+        current_labels.append("throttled now")
+    if flags["current_soft_temp_limit"]:
+        current_labels.append("soft temperature limit now")
+
+    historical_labels = []
+    if flags["past_under_voltage"]:
+        historical_labels.append("under-voltage occurred")
+    if flags["past_freq_capped"]:
+        historical_labels.append("frequency cap occurred")
+    if flags["past_throttled"]:
+        historical_labels.append("throttling occurred")
+    if flags["past_soft_temp_limit"]:
+        historical_labels.append("soft temperature limit occurred")
+
+    flags["current_labels"] = current_labels
+    flags["historical_labels"] = historical_labels
+    return flags
+
+
 def get_abs_path(relative_dir):
     return str(Path(relative_dir).resolve())
 
@@ -416,13 +460,30 @@ def test_resources():
     if "throttled=" in throttle_cmd:
         throttle_val = throttle_cmd.split("=")[1].strip()
 
-    hard_throttle = False
-    if throttle_val:
-        try:
-            bits = int(throttle_val, 16)
-            hard_throttle = bool(bits & 0x8) or bool(bits & 0x4)
-        except Exception:
-            pass
+    throttle_flags = decode_throttle_flags(throttle_val)
+    current_power_issue = False
+    current_soft_temp_limit = False
+    historical_issue = False
+    throttle_note = "Throttle flags unavailable."
+    if throttle_flags:
+        current_power_issue = (
+            throttle_flags["current_under_voltage"]
+            or throttle_flags["current_freq_capped"]
+            or throttle_flags["current_throttled"]
+        )
+        current_soft_temp_limit = throttle_flags["current_soft_temp_limit"]
+        historical_issue = bool(throttle_flags["historical_labels"])
+
+        note_parts = []
+        if throttle_flags["current_labels"]:
+            note_parts.append("Current flags: " + ", ".join(throttle_flags["current_labels"]) + ".")
+        if throttle_flags["historical_labels"]:
+            note_parts.append("Historical flags: " + ", ".join(throttle_flags["historical_labels"]) + ".")
+        if not note_parts:
+            note_parts.append("No throttle, frequency-cap, undervoltage, or soft temperature limit flags observed.")
+        if current_power_issue or current_soft_temp_limit:
+            note_parts.append("Active cooling and stable power are recommended before live demo.")
+        throttle_note = " ".join(note_parts)
 
     rows = [
         {
@@ -454,18 +515,25 @@ def test_resources():
             "status": warn_pass(temp_os is not None and temp_os <= 85)
         },
         {
-            "resource": "Hard throttle",
-            "target": "0x0",
-            "measured": throttle_val or "N/A",
+            "resource": "Current throttle/freq cap",
+            "target": "clear",
+            "measured": ", ".join(throttle_flags["current_labels"]) if throttle_flags and throttle_flags["current_labels"] else "clear",
             "source": "vcgencmd get_throttled",
-            "status": pass_fail(not hard_throttle)
+            "status": pass_fail(not current_power_issue)
         },
         {
-            "resource": "Soft throttle flag",
-            "target": "0x0",
-            "measured": throttle_val or "N/A",
+            "resource": "Current soft temp limit",
+            "target": "clear",
+            "measured": pass_fail(not current_soft_temp_limit),
             "source": "vcgencmd get_throttled",
-            "status": warn_pass(throttle_val == "0x0")
+            "status": warn_pass(not current_soft_temp_limit)
+        },
+        {
+            "resource": "Throttle history",
+            "target": "clear",
+            "measured": ", ".join(throttle_flags["historical_labels"]) if throttle_flags and throttle_flags["historical_labels"] else "clear",
+            "source": "vcgencmd get_throttled",
+            "status": warn_pass(not historical_issue)
         },
     ]
 
@@ -476,7 +544,11 @@ def test_resources():
 
     return {"section": "A", "rows": rows,
             "cpu": cpu, "ram": ram, "temp_api": temp_api,
-            "temp_os": temp_os, "throttle": throttle_val}
+            "temp_os": temp_os, "throttle": throttle_val,
+            "current_power_issue": current_power_issue,
+            "current_soft_temp_limit": current_soft_temp_limit,
+            "historical_issue": historical_issue,
+            "throttle_note": throttle_note}
 
 
 def test_sensing(crossings):
@@ -824,7 +896,7 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir, raw_enabled):
         w(f"| {r['resource']:<30} | {r['target']:>10} | "
           f"{str(r['measured']):>15} | {r['source']:<25} | {r['status']:<7} |")
     w()
-    w("Note: 0xe0000 throttle flag indicates soft temperature limit was reached at some point during the session. No hard throttle bits (0x4 or 0x8) observed. Active cooling recommended before live demo.")
+    w(f"Note: {a.get('throttle_note', 'Throttle flags unavailable.')}")
     w()
     w(hr())
     w()
@@ -986,6 +1058,14 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir, raw_enabled):
     w(f"| {'Temperature':<25} | {a_temp:<10} | "
       f"api={a.get('temp_api','N/A')} "
       f"os={a.get('temp_os','N/A')} deg C |")
+
+    a_throttle_status = "PASS"
+    if a.get("current_power_issue"):
+        a_throttle_status = "FAIL"
+    elif a.get("current_soft_temp_limit") or a.get("historical_issue"):
+        a_throttle_status = "WARNING"
+    w(f"| {'Throttle state':<25} | {a_throttle_status:<10} | "
+      f"{a.get('throttle','N/A')} |")
 
     if s.get("rows"):
         w(f"| {'Entry accuracy':<25} | "
