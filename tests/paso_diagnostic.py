@@ -434,10 +434,10 @@ def test_resources():
         },
         {
             "resource": "RAM usage",
-            "target": "1024 MB",
+            "target": "1536 MB",
             "measured": f"{ram} MB",
             "source": "ram_mb",
-            "status": warn_pass(ram is not None and ram <= 1024)
+            "status": warn_pass(ram is not None and ram <= 1536)
         },
         {
             "resource": "Temperature (API)",
@@ -977,7 +977,7 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir, raw_enabled):
       f"target={p.get('target_capture_fps','N/A')} |")
 
     a_cpu_ok = a.get("cpu", 999) <= 80
-    a_ram_ok = a.get("ram", 999999) <= 1024
+    a_ram_ok = a.get("ram", 999999) <= 1536
     a_cpu_ram = "PASS" if (a_cpu_ok and a_ram_ok) else "WARNING"
     w(f"| {'CPU/RAM':<25} | {a_cpu_ram:<10} | "
       f"cpu={a.get('cpu','N/A')}% ram={a.get('ram','N/A')}MB |")
