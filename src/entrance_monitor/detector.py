@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
+import time
 from typing import Any
 
 import cv2
@@ -23,7 +24,7 @@ class DetectorBackend(ABC):
 
 class MockPersonDetector(DetectorBackend):
     def detect(self, frame_id: int, ts: datetime, image: np.ndarray) -> DetectionPacket:
-        start = cv2.getTickCount()
+        started = time.perf_counter()
         mask = cv2.inRange(image, (0, 180, 0), (90, 255, 90))
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         detections: list[Detection] = []
@@ -41,10 +42,18 @@ class MockPersonDetector(DetectorBackend):
                         y2=int(y + h),
                         confidence=0.99,
                     )
+                    )
                 )
-            )
-        elapsed = (cv2.getTickCount() - start) * 1000.0 / cv2.getTickFrequency()
-        return DetectionPacket(frame_id=frame_id, ts=ts, detections=detections, inference_ms=elapsed)
+        elapsed = (time.perf_counter() - started) * 1000.0
+        return DetectionPacket(
+            frame_id=frame_id,
+            ts=ts,
+            detections=detections,
+            preprocess_ms=0.0,
+            inference_ms=elapsed,
+            postprocess_ms=0.0,
+            total_ms=elapsed,
+        )
 
 
 class OnnxDetector(DetectorBackend):
@@ -74,13 +83,18 @@ class OnnxDetector(DetectorBackend):
         self.iou_threshold = iou
 
     def detect(self, frame_id: int, ts: datetime, image: np.ndarray) -> DetectionPacket:
-        start = cv2.getTickCount()
+        total_started = time.perf_counter()
         input_width, input_height = self._input_size()
+        preprocess_started = time.perf_counter()
         tensor, scale, pad_left, pad_top = self._prepare_input(image, input_width, input_height)
+        preprocess_ms = (time.perf_counter() - preprocess_started) * 1000.0
+        inference_started = time.perf_counter()
         outputs = self.session.run(
             self.output_names,
             {self.input_name: tensor},
         )
+        inference_ms = (time.perf_counter() - inference_started) * 1000.0
+        postprocess_started = time.perf_counter()
         detections = self._decode_detections(
             outputs,
             image_width=image.shape[1],
@@ -91,8 +105,17 @@ class OnnxDetector(DetectorBackend):
             input_width=input_width,
             input_height=input_height,
         )
-        elapsed = (cv2.getTickCount() - start) * 1000.0 / cv2.getTickFrequency()
-        return DetectionPacket(frame_id=frame_id, ts=ts, detections=detections, inference_ms=elapsed)
+        postprocess_ms = (time.perf_counter() - postprocess_started) * 1000.0
+        total_ms = (time.perf_counter() - total_started) * 1000.0
+        return DetectionPacket(
+            frame_id=frame_id,
+            ts=ts,
+            detections=detections,
+            preprocess_ms=preprocess_ms,
+            inference_ms=inference_ms,
+            postprocess_ms=postprocess_ms,
+            total_ms=total_ms,
+        )
 
     def apply_config(self, config: DetectorConfig) -> None:
         self.requested_imgsz = config.imgsz

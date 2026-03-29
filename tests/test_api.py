@@ -22,7 +22,15 @@ def test_api_endpoints_bootstrap_with_mock_pipeline():
             time.sleep(0.2)
         assert service.latest_snapshot() is not None
         client = TestClient(create_app(service))
-        assert client.get("/api/v1/status").status_code == 200
+        status = client.get("/api/v1/status")
+        assert status.status_code == 200
+        status_payload = status.json()
+        assert "timings_ms" in status_payload
+        assert "detector_inference_ms" in status_payload["timings_ms"]
+        assert "target_capture_fps" in status_payload
+        assert "target_detector_fps" in status_payload
+        assert "drop_ratio_30s" in status_payload
+        assert "publish_backlog_ms" in status_payload
         assert client.get("/api/v1/metrics/latest").status_code == 200
         assert client.get("/api/v1/events/recent").status_code == 200
         assert client.get("/api/v1/metrics/history?minutes=1").status_code == 200

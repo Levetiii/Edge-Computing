@@ -111,7 +111,10 @@ class DetectionPacket(BaseModel):
     frame_id: int
     ts: datetime
     detections: list[Detection]
+    preprocess_ms: float = 0.0
     inference_ms: float
+    postprocess_ms: float = 0.0
+    total_ms: float = 0.0
 
 
 class TrackObservation(BaseModel):
@@ -141,6 +144,21 @@ class MmwaveSample(BaseModel):
     raw: str | None = None
 
 
+class PipelineTimingsMs(BaseModel):
+    camera_read_ms: float | None = None
+    capture_to_service_ms: float | None = None
+    detector_preprocess_ms: float | None = None
+    detector_inference_ms: float | None = None
+    detector_postprocess_ms: float | None = None
+    detector_total_ms: float | None = None
+    filter_ms: float | None = None
+    tracking_ms: float | None = None
+    crossing_ms: float | None = None
+    event_enqueue_ms: float | None = None
+    process_camera_total_ms: float | None = None
+    sse_publish_ms: float | None = None
+
+
 class StatusPayload(BaseModel):
     schema_version: str
     ts: datetime
@@ -156,11 +174,16 @@ class StatusPayload(BaseModel):
     frame_height: int
     delivered_fps: float
     detector_fps: float
+    target_capture_fps: float = 0.0
+    target_detector_fps: float = 0.0
+    drop_ratio_30s: float = 0.0
+    publish_backlog_ms: int = 0
     detector_mode: str
     gated_mode: bool
     cpu_percent: float = 0.0
     ram_mb: float = 0.0
     temperature_c: float | None = None
+    timings_ms: PipelineTimingsMs = Field(default_factory=PipelineTimingsMs)
 
 
 class MetricsSnapshot(BaseModel):

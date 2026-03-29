@@ -32,6 +32,7 @@ from .models import (
     FramePacket,
     MetricsSnapshot,
     MmwaveStatus,
+    PipelineTimingsMs,
     PresenceCorroborationState,
     StatusPayload,
     SystemState,
@@ -106,6 +107,7 @@ class RuntimeState:
     publish_degraded_active: bool = False
     mmwave_state_since: datetime | None = None
     last_mmwave_state: PresenceCorroborationState = PresenceCorroborationState.UNKNOWN
+    latest_timings: PipelineTimingsMs = field(default_factory=PipelineTimingsMs)
 
 
 @dataclass
@@ -392,6 +394,15 @@ class EdgeService:
         finally:
             self.sse.unsubscribe(sub_id)
 
+    def _timings_with_updates(self, **updates: float | None) -> PipelineTimingsMs:
+        timings = self.state.latest_timings.model_copy(deep=True)
+        for key, value in updates.items():
+            if value is None:
+                setattr(timings, key, None)
+            else:
+                setattr(timings, key, round(float(value), 2))
+        return timings
+
     def _run(self) -> None:
         while self._running.is_set():
             now = utc_now()
@@ -431,6 +442,7 @@ class EdgeService:
             self.state.mmwave_state_since = now
 
     def _process_camera(self, now: datetime) -> None:
+        process_started = time.perf_counter()
         packet = self.camera.latest()
         if packet is None:
             return
@@ -448,16 +460,25 @@ class EdgeService:
         self.state.last_detector_run_ts = now
         self._detector_run_samples.append(now)
         self.counter.line = self._roi_local_line(packet)
+        capture_to_service_ms = max(0.0, (now - packet.ts).total_seconds() * 1000.0)
         detection_packet = self.detector.detect(packet.frame_id, packet.ts, packet.roi_image)
+        filter_started = time.perf_counter()
         detection_packet.detections = self._filter_detections(packet, detection_packet.detections)
+        filter_ms = (time.perf_counter() - filter_started) * 1000.0
+        tracking_started = time.perf_counter()
         observations = self.tracker.update(detection_packet.detections, detection_packet.ts)
         self.counter.prune(self.tracker.active_track_ids())
+        tracking_ms = (time.perf_counter() - tracking_started) * 1000.0
+        crossing_started = time.perf_counter()
         events = self.counter.update(observations, detection_packet.ts)
+        crossing_ms = (time.perf_counter() - crossing_started) * 1000.0
+        enqueue_started = time.perf_counter()
         for event in events:
             self._events_30s.append(event)
             self._recent_events.append(event)
             self._record_validation_event(event)
             self.storage.enqueue_event(event)
+        event_enqueue_ms = (time.perf_counter() - enqueue_started) * 1000.0
         self._prune_old_windows(now)
         self._active_track_samples.append((now, len(observations)))
         self.state.last_camera_metric_ts = now
@@ -466,6 +487,19 @@ class EdgeService:
         self._latest_packet = packet
         self._latest_detections_count = len(detection_packet.detections)
         self._latest_tracks = observations
+        self.state.latest_timings = self._timings_with_updates(
+            camera_read_ms=self.camera.stats.last_read_ms,
+            capture_to_service_ms=capture_to_service_ms,
+            detector_preprocess_ms=detection_packet.preprocess_ms,
+            detector_inference_ms=detection_packet.inference_ms,
+            detector_postprocess_ms=detection_packet.postprocess_ms,
+            detector_total_ms=detection_packet.total_ms,
+            filter_ms=filter_ms,
+            tracking_ms=tracking_ms,
+            crossing_ms=crossing_ms,
+            event_enqueue_ms=event_enqueue_ms,
+            process_camera_total_ms=(time.perf_counter() - process_started) * 1000.0,
+        )
 
     def _prune_old_windows(self, now: datetime) -> None:
         while self._events_30s and (now - self._events_30s[0].ts).total_seconds() > self.settings.runtime.window_seconds:
@@ -512,15 +546,22 @@ class EdgeService:
                 return
         snapshot = self._build_snapshot(now)
         status = self._build_status(now, snapshot)
+        self.storage.enqueue_snapshot(snapshot)
+        publish_started = time.perf_counter()
+        self.sse.publish(snapshot.model_dump_json())
+        sse_publish_ms = (time.perf_counter() - publish_started) * 1000.0
+        final_timings = self._timings_with_updates(sse_publish_ms=sse_publish_ms)
+        status.timings_ms = final_timings
         with self._lock:
+            self.state.latest_timings = final_timings
             self._latest_snapshot = snapshot
             self._latest_status = status
-        self.storage.enqueue_snapshot(snapshot)
-        self.sse.publish(snapshot.model_dump_json())
         self.state.last_snapshot_ts = now
 
     def _build_status(self, now: datetime, snapshot: MetricsSnapshot) -> StatusPayload:
         cpu, ram_mb, temperature_c = self._read_system_metrics()
+        target_detector_fps = self._current_detector_fps(now)
+        publish_backlog_ms = self._publish_backlog_age_ms()
         return StatusPayload(
             schema_version=self.settings.app.schema_version,
             ts=now,
@@ -536,11 +577,16 @@ class EdgeService:
             frame_height=snapshot.frame_height,
             delivered_fps=self.camera.stats.delivered_fps,
             detector_fps=self._detector_fps(now),
+            target_capture_fps=self.camera.stats.expected_fps if self.camera.stats.expected_fps >= 1.0 else float(self.settings.camera.fps),
+            target_detector_fps=target_detector_fps,
+            drop_ratio_30s=self._drop_ratio.ratio(now),
+            publish_backlog_ms=publish_backlog_ms,
             detector_mode=self.settings.detector.backend,
             gated_mode=self.state.gated_mode,
             cpu_percent=cpu,
             ram_mb=ram_mb,
             temperature_c=temperature_c,
+            timings_ms=self.state.latest_timings,
         )
 
     def _build_snapshot(self, now: datetime) -> MetricsSnapshot:

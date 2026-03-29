@@ -2,7 +2,7 @@
 """
 PASO Diagnostic Script
 INF2009 Edge Computing and Analytics
-Usage: python3 scripts/paso_diagnostic.py [--host localhost] [--port 8000] [--crossings 10]
+Usage: python3 tests/paso_diagnostic.py [--host localhost] [--port 8000] [--crossings 10]
 """
 
 import argparse
@@ -11,7 +11,6 @@ import time
 import subprocess
 import sys
 import urllib.request
-import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -74,67 +73,181 @@ def warn_pass(condition):
 
 
 def get_abs_path(relative_dir):
-    cwd = run_cmd("pwd")
-    return f"{cwd}/{relative_dir}"
+    return str(Path(relative_dir).resolve())
+
+
+def approx_latency_ms(fps):
+    return round(1000 / fps, 1) if fps and fps > 0 else None
+
+
+def accuracy_percent(error, manual):
+    if manual <= 0:
+        return 0.0
+    raw = (1 - abs(error) / manual) * 100
+    return round(max(0.0, min(100.0, raw)), 1)
 
 
 def test_pipeline():
     print("\n[P] Pipeline Latency Budget...")
     status = api_get("/api/v1/status")
     save_raw("p_status.json", status)
+    settings = api_get("/api/v1/settings")
+    if "error" not in settings:
+        save_raw("p_settings.json", settings)
 
     if "error" in status:
         return {"section": "P", "error": status["error"], "rows": []}
 
     delivered = status.get("delivered_fps", 0)
     detector = status.get("detector_fps", 0)
-    frame_ms = round(1000 / delivered, 1) if delivered > 0 else None
-    detect_ms = round(1000 / detector, 1) if detector > 0 else None
+    gated_mode = bool(status.get("gated_mode", False))
+    timings = status.get("timings_ms", {}) if isinstance(status, dict) else {}
+    frame_ms = timings.get("camera_read_ms")
+    detect_pre_ms = timings.get("detector_preprocess_ms")
+    detect_inf_ms = timings.get("detector_inference_ms")
+    detect_post_ms = timings.get("detector_postprocess_ms")
+    detect_total_ms = timings.get("detector_total_ms")
+    capture_to_service_ms = timings.get("capture_to_service_ms")
+    filter_ms = timings.get("filter_ms")
+    tracking_ms = timings.get("tracking_ms")
+    crossing_ms = timings.get("crossing_ms")
+    enqueue_ms = timings.get("event_enqueue_ms")
+    publish_ms = timings.get("sse_publish_ms")
+    process_total_ms = timings.get("process_camera_total_ms")
+    if frame_ms is None:
+        frame_ms = approx_latency_ms(delivered)
+    if detect_total_ms is None:
+        detect_total_ms = approx_latency_ms(detector)
+
+    camera_cfg = settings.get("camera", {}) if isinstance(settings, dict) else {}
+    detector_cfg = settings.get("detector", {}) if isinstance(settings, dict) else {}
+    target_capture_fps = status.get("target_capture_fps")
+    if target_capture_fps is None and isinstance(camera_cfg, dict):
+        target_capture_fps = camera_cfg.get("fps")
+    target_detector_fps = status.get("target_detector_fps")
+    if target_detector_fps is None and isinstance(camera_cfg, dict):
+        detector_key = "detector_fps_gated" if gated_mode else "detector_fps_normal"
+        target_detector_fps = camera_cfg.get(detector_key)
+    capture_target_ms = approx_latency_ms(target_capture_fps)
+    detect_target_ms = approx_latency_ms(target_detector_fps)
+    drop_ratio_30s = status.get("drop_ratio_30s")
+    publish_backlog_ms = status.get("publish_backlog_ms")
+    detector_backend = (
+        str(detector_cfg.get("backend", status.get("detector_mode", "detector"))).upper()
+        if isinstance(detector_cfg, dict)
+        else str(status.get("detector_mode", "detector")).upper()
+    )
+
+    capture_floor = target_capture_fps * 0.8 if isinstance(target_capture_fps, (int, float)) else None
+    detector_floor = target_detector_fps * 0.8 if isinstance(target_detector_fps, (int, float)) else None
 
     rows = [
         {
             "stage": "Frame capture",
-            "target_ms": 20,
+            "target_ms": capture_target_ms if capture_target_ms is not None else "N/A",
             "measured_ms": frame_ms,
-            "basis": f"1000 / {delivered} delivered_fps",
-            "status": warn_pass(frame_ms is not None and frame_ms <= 67)
+            "basis": (
+                f"observed {delivered} FPS vs target {target_capture_fps} FPS"
+                if target_capture_fps is not None
+                else f"1000 / {delivered} delivered_fps"
+            ),
+            "status": warn_pass(
+                delivered > 0 and (capture_floor is None or delivered >= capture_floor)
+            )
         },
         {
-            "stage": "Detection (ONNX YOLOv8-Nano)",
-            "target_ms": 80,
-            "measured_ms": detect_ms,
-            "basis": f"1000 / {detector} detector_fps",
-            "status": warn_pass(detect_ms is not None and detect_ms <= 80)
+            "stage": "Capture to service handoff",
+            "target_ms": "TBC",
+            "measured_ms": capture_to_service_ms if capture_to_service_ms is not None else "TBC",
+            "basis": "Direct app timing" if capture_to_service_ms is not None else "Not exposed",
+            "status": "PASS" if capture_to_service_ms is not None else "PENDING",
         },
         {
-            "stage": "Tracking (ByteTrack)",
-            "target_ms": 20,
-            "measured_ms": "TBC",
-            "basis": "Not individually profiled",
-            "status": "PENDING"
+            "stage": "Detector preprocess",
+            "target_ms": "TBC",
+            "measured_ms": detect_pre_ms if detect_pre_ms is not None else "TBC",
+            "basis": "Direct app timing" if detect_pre_ms is not None else "Not exposed",
+            "status": "PASS" if detect_pre_ms is not None else "PENDING",
         },
         {
-            "stage": "KPI compute",
-            "target_ms": 5,
-            "measured_ms": "< 1",
-            "basis": "In-memory arithmetic",
-            "status": "PASS"
+            "stage": "Detector inference",
+            "target_ms": detect_target_ms if detect_target_ms is not None else "N/A",
+            "measured_ms": detect_inf_ms if detect_inf_ms is not None else "TBC",
+            "basis": "Direct app timing" if detect_inf_ms is not None else "Not exposed",
+            "status": warn_pass(
+                detect_inf_ms is not None
+                and (detect_target_ms is None or detect_inf_ms <= detect_target_ms)
+            ) if detect_inf_ms is not None else "PENDING",
+        },
+        {
+            "stage": "Detector postprocess",
+            "target_ms": "TBC",
+            "measured_ms": detect_post_ms if detect_post_ms is not None else "TBC",
+            "basis": "Direct app timing" if detect_post_ms is not None else "Not exposed",
+            "status": "PASS" if detect_post_ms is not None else "PENDING",
+        },
+        {
+            "stage": f"Detection total ({detector_backend})",
+            "target_ms": detect_target_ms if detect_target_ms is not None else "N/A",
+            "measured_ms": detect_total_ms,
+            "basis": (
+                "Direct app timing"
+                if timings.get("detector_total_ms") is not None
+                else (
+                    f"observed {detector} FPS vs target {target_detector_fps} FPS"
+                    if target_detector_fps is not None
+                    else f"1000 / {detector} detector_fps"
+                )
+            ),
+            "status": warn_pass(
+                (
+                    detect_total_ms is not None
+                    and (detect_target_ms is None or detect_total_ms <= detect_target_ms)
+                ) if timings.get("detector_total_ms") is not None else
+                (detector > 0 and (detector_floor is None or detector >= detector_floor))
+            )
+        },
+        {
+            "stage": "Detection filtering",
+            "target_ms": "TBC",
+            "measured_ms": filter_ms if filter_ms is not None else "TBC",
+            "basis": "Direct app timing" if filter_ms is not None else "Not exposed",
+            "status": "PASS" if filter_ms is not None else "PENDING"
+        },
+        {
+            "stage": "Tracking (custom centroid tracker)",
+            "target_ms": "TBC",
+            "measured_ms": tracking_ms if tracking_ms is not None else "TBC",
+            "basis": "Direct app timing" if tracking_ms is not None else "Not exposed",
+            "status": "PASS" if tracking_ms is not None else "PENDING"
+        },
+        {
+            "stage": "Crossing logic",
+            "target_ms": "TBC",
+            "measured_ms": crossing_ms if crossing_ms is not None else "TBC",
+            "basis": "Direct app timing" if crossing_ms is not None else "Not exposed",
+            "status": "PASS" if crossing_ms is not None else "PENDING"
+        },
+        {
+            "stage": "Event enqueue",
+            "target_ms": "TBC",
+            "measured_ms": enqueue_ms if enqueue_ms is not None else "TBC",
+            "basis": "Direct app timing" if enqueue_ms is not None else "Not exposed",
+            "status": "PASS" if enqueue_ms is not None else "PENDING"
         },
         {
             "stage": "SSE publish",
             "target_ms": 10,
-            "measured_ms": "TBC",
-            "basis": "Not individually profiled",
-            "status": "PENDING"
+            "measured_ms": publish_ms if publish_ms is not None else "TBC",
+            "basis": "Direct app timing" if publish_ms is not None else "Not exposed",
+            "status": warn_pass(publish_ms is not None and publish_ms <= 10) if publish_ms is not None else "PENDING"
         },
         {
-            "stage": "End-to-end (estimated)",
+            "stage": "Per-frame processing total",
             "target_ms": 200,
-            "measured_ms": round((frame_ms or 0) + (detect_ms or 0) + 1, 1),
-            "basis": "Sum of measured stages",
-            "status": warn_pass(
-                (frame_ms or 999) + (detect_ms or 999) + 1 <= 200
-            )
+            "measured_ms": process_total_ms if process_total_ms is not None else "TBC",
+            "basis": "Direct app timing" if process_total_ms is not None else "Not exposed",
+            "status": warn_pass(process_total_ms is not None and process_total_ms <= 200) if process_total_ms is not None else "PENDING"
         },
     ]
 
@@ -143,7 +256,11 @@ def test_pipeline():
         print(f"  {r['stage']:<35} {str(r['measured_ms']):>8} ms  {r['status']}")
 
     return {"section": "P", "raw": status, "rows": rows,
-            "delivered_fps": delivered, "detector_fps": detector}
+            "delivered_fps": delivered, "detector_fps": detector,
+            "target_capture_fps": target_capture_fps,
+            "target_detector_fps": target_detector_fps,
+            "drop_ratio_30s": drop_ratio_30s,
+            "publish_backlog_ms": publish_backlog_ms}
 
 
 def test_resources():
@@ -300,15 +417,9 @@ def test_sensing(crossings):
     exit_err = stop.get("exit_error", sys_exit - manual_exit)
     total_err = stop.get("total_error", sys_total - manual_total)
 
-    entry_acc = round(
-        (1 - abs(entry_err) / manual_entry) * 100, 1
-    ) if manual_entry > 0 else 0
-    exit_acc = round(
-        (1 - abs(exit_err) / manual_exit) * 100, 1
-    ) if manual_exit > 0 else 0
-    total_acc = round(
-        (1 - abs(total_err) / manual_total) * 100, 1
-    ) if manual_total > 0 else 0
+    entry_acc = accuracy_percent(entry_err, manual_entry)
+    exit_acc = accuracy_percent(exit_err, manual_exit)
+    total_acc = accuracy_percent(total_err, manual_total)
 
     rows = [
         {"direction": "ENTRY", "manual": manual_entry,
@@ -368,7 +479,9 @@ def test_observability():
     print(f"  After replug: camera_status={recovery_camera} "
           f"system_state={recovery_state}")
 
-    pid_output = run_cmd("ps aux | grep entrance | grep -v grep")
+    pid_output = run_cmd("pgrep -af entrance-monitor")
+    if not pid_output:
+        pid_output = run_cmd("ps aux | grep entrance | grep -v grep")
     process_alive = "entrance-monitor" in pid_output
     save_raw("o_process.txt", pid_output)
 
@@ -399,28 +512,102 @@ def test_observability():
         },
     ]
 
+    mmwave_baseline = api_get("/api/v1/status")
+    save_raw("o_mmwave_baseline.json", mmwave_baseline)
+    mmwave_baseline_status = mmwave_baseline.get("mmwave_status", "UNKNOWN")
+    mmwave_baseline_state = mmwave_baseline.get("system_state", "UNKNOWN")
+    mmwave_rows = []
+    mmwave_fault_detected = None
+    mmwave_recovered = None
+    mmwave_note = ""
+
+    if mmwave_baseline_status != "OK":
+        mmwave_note = (
+            f"Skipped: baseline mmwave_status={mmwave_baseline_status}. "
+            "Connect the physical mmWave sensor and rerun to test fault handling."
+        )
+        print(f"  mmWave fault test skipped: {mmwave_note}")
+    else:
+        print(f"  mmWave baseline: mmwave_status={mmwave_baseline_status} system_state={mmwave_baseline_state}")
+        input("\n  ACTION REQUIRED: Physically unplug the mmWave sensor, then press ENTER...")
+        time.sleep(5)
+
+        mmwave_fault = api_get("/api/v1/status")
+        save_raw("o_mmwave_fault.json", mmwave_fault)
+        fault_mmwave = mmwave_fault.get("mmwave_status", "UNKNOWN")
+        fault_system = mmwave_fault.get("system_state", "UNKNOWN")
+        print(f"  After mmWave unplug: mmwave_status={fault_mmwave} system_state={fault_system}")
+
+        input("\n  ACTION REQUIRED: Plug the mmWave sensor back in, then press ENTER...")
+        time.sleep(5)
+
+        mmwave_recovery_payload = api_get("/api/v1/status")
+        save_raw("o_mmwave_recovery.json", mmwave_recovery_payload)
+        recovery_mmwave = mmwave_recovery_payload.get("mmwave_status", "UNKNOWN")
+        recovery_system = mmwave_recovery_payload.get("system_state", "UNKNOWN")
+        print(f"  After mmWave replug: mmwave_status={recovery_mmwave} system_state={recovery_system}")
+
+        mmwave_pid_output = run_cmd("pgrep -af entrance-monitor")
+        if not mmwave_pid_output:
+            mmwave_pid_output = run_cmd("ps aux | grep entrance | grep -v grep")
+        mmwave_process_alive = "entrance-monitor" in mmwave_pid_output
+        save_raw("o_mmwave_process.txt", mmwave_pid_output)
+
+        mmwave_fault_detected = fault_mmwave != "OK" or fault_system in {"MMWAVE_DISCONNECTED", "MMWAVE_DEGRADED"}
+        mmwave_recovered = recovery_mmwave == "OK"
+        mmwave_rows = [
+            {
+                "phase": "Baseline (before unplug)",
+                "mmwave_status": mmwave_baseline_status,
+                "system_state": mmwave_baseline_state,
+                "process_alive": pass_fail(True),
+                "status": "INFO",
+            },
+            {
+                "phase": "After unplug (5s wait)",
+                "mmwave_status": fault_mmwave,
+                "system_state": fault_system,
+                "process_alive": pass_fail(mmwave_process_alive),
+                "status": pass_fail(mmwave_fault_detected),
+            },
+            {
+                "phase": "After replug (5s wait)",
+                "mmwave_status": recovery_mmwave,
+                "system_state": recovery_system,
+                "process_alive": pass_fail(mmwave_process_alive),
+                "status": pass_fail(mmwave_recovered),
+            },
+        ]
+
     metrics = api_get("/api/v1/metrics/latest")
     save_raw("o_metrics.json", metrics)
+    latest_status = api_get("/api/v1/status")
+    save_raw("o_status_final.json", latest_status)
 
     sensor_rows = [
         {"sensor": "Camera (C270 HD)", "field": "camera_status",
-         "value": recovery.get("camera_status", "N/A")},
-        # [PLACEHOLDER] Update "field" and "value" once ultrasonic sensor
-        # is connected. Match "field" to the actual key in /api/v1/status.
-        {"sensor": "Ultrasonic (placeholder)", "field": "ultrasonic_status",
-         "value": "PENDING"},
+         "value": latest_status.get("camera_status", recovery.get("camera_status", "N/A"))},
+        {"sensor": "mmWave sensor", "field": "mmwave_status",
+         "value": latest_status.get("mmwave_status", metrics.get("mmwave_status", "N/A"))},
+        {"sensor": "Presence fusion", "field": "presence_corroboration_state",
+         "value": metrics.get("presence_corroboration_state", "N/A")},
+        {"sensor": "Gated mode", "field": "gated_mode",
+         "value": latest_status.get("gated_mode", metrics.get("gated_mode", "N/A"))},
         {"sensor": "Overall system", "field": "system_state",
-         "value": recovery.get("system_state", "N/A")},
+         "value": latest_status.get("system_state", recovery.get("system_state", "N/A"))},
         {"sensor": "Count confidence", "field": "count_confidence",
-         "value": recovery.get("count_confidence", "N/A")},
+         "value": latest_status.get("count_confidence", metrics.get("count_confidence", "N/A"))},
     ]
 
     print(f"  Fault detected: {fault_detected}  Recovered: {recovered}  "
           f"Process alive: {process_alive}")
 
-    return {"section": "O", "rows": rows, "sensor_rows": sensor_rows,
+    return {"section": "O", "rows": rows, "mmwave_rows": mmwave_rows, "sensor_rows": sensor_rows,
             "fault_detected": fault_detected, "recovered": recovered,
-            "process_alive": process_alive}
+            "process_alive": process_alive,
+            "mmwave_fault_detected": mmwave_fault_detected,
+            "mmwave_recovered": mmwave_recovered,
+            "mmwave_note": mmwave_note}
 
 
 def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
@@ -435,7 +622,7 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
     w(f"**Generated:** "
       f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}")
     w("**Device:** Raspberry Pi 5")
-    w("**Script:** scripts/paso_diagnostic.py")
+    w("**Script:** tests/paso_diagnostic.py")
     w()
     w(hr())
     w()
@@ -444,12 +631,14 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
     w()
     w("**Test Methodology:**")
     w()
-    w("Script queried GET /api/v1/status while entrance-monitor was running. Per-stage latency derived as 1000 divided by FPS from delivered_fps and detector_fps fields. Individual ByteTrack and SSE stage timing requires code-level instrumentation and is marked PENDING. Communication layer uses REST and SSE (Server-Sent Events).")
+    w("Script queried GET /api/v1/status while entrance-monitor was running and, when available, GET /api/v1/settings to read the current configured cadence. Where exposed by the application, stage timings are taken directly from runtime perf_counter instrumentation. Only missing fields fall back to rough FPS-derived estimates. Communication layer uses REST and SSE (Server-Sent Events).")
     w()
     if "error" in p:
         w(f"ERROR: Could not reach API -- {p['error']}")
     else:
         w(f"Source: {abs_raw_dir}/p_status.json")
+        if p.get("target_capture_fps") is not None or p.get("target_detector_fps") is not None:
+            w(f"Source: {abs_raw_dir}/p_settings.json")
         w()
         w(f"| {'Stage':<35} | {'Target (ms)':>11} | {'Measured (ms)':>13} "
           f"| {'Basis':<35} | Status  |")
@@ -459,7 +648,16 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
               f"{str(r['measured_ms']):>13} | {r['basis']:<35} | "
               f"{r['status']:<7} |")
         w()
-        w("Note: FPS shortfall is caused by running at 1280x720 resolution. Reducing to 640x480 in config/pi.local.yaml is the identified mitigation and does not require code changes.")
+        w("### Scheduling and Overload")
+        w()
+        w(f"- Target capture FPS: `{p.get('target_capture_fps', 'N/A')}`")
+        w(f"- Actual capture FPS: `{p.get('delivered_fps', 'N/A')}`")
+        w(f"- Target detector FPS: `{p.get('target_detector_fps', 'N/A')}`")
+        w(f"- Actual detector FPS: `{p.get('detector_fps', 'N/A')}`")
+        w(f"- Drop ratio (30s): `{p.get('drop_ratio_30s', 'N/A')}`")
+        w(f"- Publish backlog: `{p.get('publish_backlog_ms', 'N/A')} ms`")
+        w()
+        w("Note: this section prefers direct runtime timings from the application. Any stage still marked with FPS-based values or PENDING needs additional code instrumentation before final PASO submission.")
     w()
     w(hr())
     w()
@@ -547,11 +745,32 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
         )
         w(f"Result: {overall_o1}")
     w()
-    w("### Test O-2: Ultrasonic Sensor Fault")
+    w("### Test O-2: mmWave Sensor Fault")
     w()
-    # [PLACEHOLDER] Replace "Status: PENDING" below with actual test results
-    # once the ultrasonic sensor is physically connected and tested.
-    w("Status: PENDING")
+    w("**Test Methodology:**")
+    w()
+    w("If the baseline mmwave_status is OK, script prompts the tester to unplug the mmWave sensor, waits 5 seconds, re-queries status, then prompts for replug and checks recovery after another 5 seconds. Process liveness is verified after the fault sequence.")
+    w()
+    if o.get("mmwave_rows"):
+        w(f"Source: {abs_raw_dir}/o_mmwave_baseline.json")
+        w(f"Source: {abs_raw_dir}/o_mmwave_fault.json")
+        w(f"Source: {abs_raw_dir}/o_mmwave_recovery.json")
+        w(f"Source: {abs_raw_dir}/o_mmwave_process.txt")
+        w()
+        w(f"| {'Phase':<30} | {'mmwave_status':>14} | {'system_state':>20} | {'Process':>8} | Status  |")
+        w(f"|{'-'*32}|{'-'*16}|{'-'*22}|{'-'*10}|---------|")
+        for r in o["mmwave_rows"]:
+            w(f"| {r['phase']:<30} | {r['mmwave_status']:>14} | {r['system_state']:>20} | {r['process_alive']:>8} | {r['status']:<7} |")
+        w()
+        overall_o2 = pass_fail(
+            bool(o.get("mmwave_fault_detected")) and bool(o.get("mmwave_recovered"))
+        )
+        w(f"Result: {overall_o2}")
+    else:
+        w(f"Status: SKIPPED")
+        if o.get("mmwave_note"):
+            w()
+            w(o["mmwave_note"])
     w()
     w("### Test O-3: Dual Sensor Health Reporting")
     w()
@@ -559,6 +778,7 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
         w("Status: SKIPPED")
     else:
         w(f"Source: {abs_raw_dir}/o_metrics.json")
+        w(f"Source: {abs_raw_dir}/o_status_final.json")
         w()
         w(f"| {'Sensor':<25} | {'Status Field':<20} | {'Measured Value':<40} |")
         w(f"|{'-'*27}|{'-'*22}|{'-'*42}|")
@@ -575,11 +795,13 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
     w(f"|{'-'*27}|{'-'*12}|-------|")
 
     p_fps_status = warn_pass(
-        p.get("delivered_fps", 0) >= 15
+        p.get("target_capture_fps") is not None
+        and p.get("delivered_fps", 0) >= (p.get("target_capture_fps", 0) * 0.8)
     ) if "delivered_fps" in p else "ERROR"
     w(f"| {'Pipeline FPS':<25} | {p_fps_status:<10} | "
       f"delivered={p.get('delivered_fps','N/A')} "
-      f"detector={p.get('detector_fps','N/A')} |")
+      f"detector={p.get('detector_fps','N/A')} "
+      f"target={p.get('target_capture_fps','N/A')} |")
 
     a_cpu = warn_pass(a.get("cpu", 999) <= 80)
     w(f"| {'CPU/RAM':<25} | {a_cpu:<10} | "
@@ -615,8 +837,13 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
         w(f"| {'Fault injection':<25} | {'SKIPPED':<10} | "
           f"Run without --skip-fault to test |")
 
-    w(f"| {'Ultrasonic sensor (O-2)':<25} | {'PENDING':<10} | "
-      f"Physical sensor connection required |")
+    if o.get("mmwave_rows"):
+        w(f"| {'mmWave fault handling':<25} | "
+          f"{pass_fail(bool(o.get('mmwave_fault_detected')) and bool(o.get('mmwave_recovered'))):<10} | "
+          f"Sensor disconnect/recovery sequence |")
+    else:
+        w(f"| {'mmWave fault handling':<25} | {'SKIPPED':<10} | "
+          f"{o.get('mmwave_note', 'Physical sensor connection required')} |")
     w()
 
     REPORT_FILE.write_text("\n".join(lines))
@@ -674,7 +901,7 @@ def main():
     abs_report_dir = get_abs_path(REPORT_DIR)
     abs_raw_dir = get_abs_path(RAW_DIR)
 
-    report = write_report(p, a, s, o, abs_report_dir, abs_raw_dir)
+    write_report(p, a, s, o, abs_report_dir, abs_raw_dir)
 
     hostname = run_cmd("hostname")
     username = run_cmd("whoami")

@@ -28,6 +28,7 @@ class CameraStats:
     negotiated_width: int = 0
     negotiated_height: int = 0
     source_kind: str = "webcam"
+    last_read_ms: float | None = None
 
 
 VIDEO_FILE_EXTENSIONS = {
@@ -102,7 +103,9 @@ class CameraSource:
                 try:
                     while self._running.is_set():
                         self.stats.attempted_frames += 1
+                        read_started = time.perf_counter()
                         ok, frame = capture.read()
+                        self.stats.last_read_ms = (time.perf_counter() - read_started) * 1000.0
                         if not ok or frame is None:
                             read_failures += 1
                             if read_failures >= 5:
@@ -180,7 +183,9 @@ class CameraSource:
                 while self._running.is_set():
                     started = time.monotonic()
                     self.stats.attempted_frames += 1
+                    read_started = time.perf_counter()
                     ok, frame = capture.read()
+                    self.stats.last_read_ms = (time.perf_counter() - read_started) * 1000.0
                     if not ok or frame is None:
                         break
                     if frame.shape[1] != self.config.width or frame.shape[0] != self.config.height:
