@@ -7,6 +7,7 @@ Usage: python3 tests/paso_diagnostic.py [--host localhost] [--port 8000] [--cros
 
 import argparse
 import json
+import statistics
 import time
 import subprocess
 import sys
@@ -53,7 +54,7 @@ def run_cmd(cmd):
 def save_raw(name, data):
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     path = RAW_DIR / name
-    if isinstance(data, dict):
+    if isinstance(data, (dict, list)):
         path.write_text(json.dumps(data, indent=2))
     else:
         path.write_text(str(data))
@@ -87,9 +88,105 @@ def accuracy_percent(error, manual):
     return round(max(0.0, min(100.0, raw)), 1)
 
 
+def mean_or_none(values):
+    numeric = [float(value) for value in values if isinstance(value, (int, float))]
+    if not numeric:
+        return None
+    return round(statistics.fmean(numeric), 2)
+
+
+def dominant_or_last(values):
+    filtered = [value for value in values if value is not None]
+    if not filtered:
+        return None
+    try:
+        return statistics.mode(filtered)
+    except statistics.StatisticsError:
+        return filtered[-1]
+
+
+def sample_status_window(duration_seconds=4.0, interval_seconds=0.5):
+    samples = []
+    deadline = time.time() + max(duration_seconds, interval_seconds)
+    while True:
+        sample = api_get("/api/v1/status")
+        if "error" not in sample:
+            samples.append(sample)
+        if time.time() >= deadline:
+            break
+        time.sleep(max(0.1, interval_seconds))
+    return samples
+
+
+def summarize_status_samples(samples):
+    if not samples:
+        return {"error": "No status samples collected."}
+
+    healthy = [
+        sample
+        for sample in samples
+        if sample.get("camera_status") == "OK"
+        and float(sample.get("delivered_fps", 0) or 0) > 0
+    ]
+    selected = healthy or samples
+
+    summary = {
+        "schema_version": dominant_or_last([item.get("schema_version") for item in selected]),
+        "ts": selected[-1].get("ts"),
+        "camera_status": dominant_or_last([item.get("camera_status") for item in selected]),
+        "mmwave_status": dominant_or_last([item.get("mmwave_status") for item in selected]),
+        "system_state": dominant_or_last([item.get("system_state") for item in selected]),
+        "count_confidence": dominant_or_last([item.get("count_confidence") for item in selected]),
+        "warning_flags": selected[-1].get("warning_flags", []),
+        "gated_mode": bool(selected[-1].get("gated_mode", False)),
+        "target_capture_fps": mean_or_none([item.get("target_capture_fps") for item in selected]),
+        "target_detector_fps": mean_or_none([item.get("target_detector_fps") for item in selected]),
+        "drop_ratio_30s": mean_or_none([item.get("drop_ratio_30s") for item in selected]),
+        "publish_backlog_ms": mean_or_none([item.get("publish_backlog_ms") for item in selected]),
+        "delivered_fps": mean_or_none([item.get("delivered_fps") for item in selected]),
+        "detector_fps": mean_or_none([item.get("detector_fps") for item in selected]),
+        "cpu_percent": mean_or_none([item.get("cpu_percent") for item in selected]),
+        "ram_mb": mean_or_none([item.get("ram_mb") for item in selected]),
+        "temperature_c": mean_or_none([item.get("temperature_c") for item in selected]),
+        "sampling": {
+            "sample_count": len(samples),
+            "healthy_sample_count": len(healthy),
+            "window_seconds": round(max(0.0, (len(samples) - 1) * 0.5), 2),
+        },
+        "timings_ms": {},
+    }
+
+    timing_fields = (
+        "camera_read_ms",
+        "capture_to_service_ms",
+        "detector_preprocess_ms",
+        "detector_inference_ms",
+        "detector_postprocess_ms",
+        "detector_total_ms",
+        "filter_ms",
+        "tracking_ms",
+        "crossing_ms",
+        "event_enqueue_ms",
+        "process_camera_total_ms",
+        "sse_publish_ms",
+    )
+    for field in timing_fields:
+        summary["timings_ms"][field] = mean_or_none(
+            [
+                (item.get("timings_ms") or {}).get(field)
+                for item in selected
+                if isinstance(item.get("timings_ms"), dict)
+            ]
+        )
+
+    return summary
+
+
 def test_pipeline():
     print("\n[P] Pipeline Latency Budget...")
-    status = api_get("/api/v1/status")
+    status_samples = sample_status_window()
+    save_raw("p_status_samples.json", status_samples)
+    status = summarize_status_samples(status_samples)
     save_raw("p_status.json", status)
     settings = api_get("/api/v1/settings")
     if "error" not in settings:
@@ -251,7 +348,11 @@ def test_pipeline():
         },
     ]
 
-    print(f"  delivered_fps={delivered}  detector_fps={detector}")
+    sampling = status.get("sampling", {})
+    print(
+        f"  delivered_fps={delivered}  detector_fps={detector}  "
+        f"samples={sampling.get('sample_count', 0)} healthy={sampling.get('healthy_sample_count', 0)}"
+    )
     for r in rows:
         print(f"  {r['stage']:<35} {str(r['measured_ms']):>8} ms  {r['status']}")
 
@@ -260,7 +361,8 @@ def test_pipeline():
             "target_capture_fps": target_capture_fps,
             "target_detector_fps": target_detector_fps,
             "drop_ratio_30s": drop_ratio_30s,
-            "publish_backlog_ms": publish_backlog_ms}
+            "publish_backlog_ms": publish_backlog_ms,
+            "sampling": sampling}
 
 
 def test_resources():
@@ -631,12 +733,13 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
     w()
     w("**Test Methodology:**")
     w()
-    w("Script queried GET /api/v1/status while entrance-monitor was running and, when available, GET /api/v1/settings to read the current configured cadence. Where exposed by the application, stage timings are taken directly from runtime perf_counter instrumentation. Only missing fields fall back to rough FPS-derived estimates. Communication layer uses REST and SSE (Server-Sent Events).")
+    w("Script sampled GET /api/v1/status over a short time window while entrance-monitor was running and summarized healthy samples to avoid single bad snapshots. GET /api/v1/settings was also queried to read the current configured cadence. Where exposed by the application, stage timings are taken directly from runtime perf_counter instrumentation. Only missing fields fall back to rough FPS-derived estimates. Communication layer uses REST and SSE (Server-Sent Events).")
     w()
     if "error" in p:
         w(f"ERROR: Could not reach API -- {p['error']}")
     else:
         w(f"Source: {abs_raw_dir}/p_status.json")
+        w(f"Source: {abs_raw_dir}/p_status_samples.json")
         if p.get("target_capture_fps") is not None or p.get("target_detector_fps") is not None:
             w(f"Source: {abs_raw_dir}/p_settings.json")
         w()
@@ -656,6 +759,9 @@ def write_report(p, a, s, o, abs_report_dir, abs_raw_dir):
         w(f"- Actual detector FPS: `{p.get('detector_fps', 'N/A')}`")
         w(f"- Drop ratio (30s): `{p.get('drop_ratio_30s', 'N/A')}`")
         w(f"- Publish backlog: `{p.get('publish_backlog_ms', 'N/A')} ms`")
+        if p.get("sampling"):
+            w(f"- Status samples collected: `{p['sampling'].get('sample_count', 'N/A')}`")
+            w(f"- Healthy samples used: `{p['sampling'].get('healthy_sample_count', 'N/A')}`")
         w()
         w("Note: this section prefers direct runtime timings from the application. Any stage still marked with FPS-based values or PENDING needs additional code instrumentation before final PASO submission.")
     w()
