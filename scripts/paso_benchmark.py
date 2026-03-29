@@ -80,6 +80,16 @@ def flatten_status(payload: dict) -> dict:
     }
 
 
+def is_duplicate_sample(previous: dict | None, current: dict) -> bool:
+    if previous is None:
+        return False
+    previous_ts = previous.get("ts")
+    current_ts = current.get("ts")
+    if previous_ts is not None and current_ts is not None:
+        return previous_ts == current_ts
+    return previous == current
+
+
 def write_summary_md(output_path: Path, summary: dict) -> None:
     lines = [
         "# PASO Benchmark Summary",
@@ -143,7 +153,8 @@ def main() -> None:
     while time.time() < deadline:
         status = api_get_json(f"{base_url}/api/v1/status")
         sample = flatten_status(status)
-        samples.append(sample)
+        if not is_duplicate_sample(samples[-1] if samples else None, sample):
+            samples.append(sample)
         time.sleep(max(0.1, args.interval))
 
     jsonl_path = run_dir / "samples.jsonl"
